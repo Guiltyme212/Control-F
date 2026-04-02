@@ -50,22 +50,101 @@ const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?:
   );
 };
 
+/* Reusable card wrapper with hover glow */
+function ChartCard({
+  children,
+  delay,
+  className = '',
+}: {
+  children: React.ReactNode;
+  delay: number;
+  className?: string;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay }}
+      whileHover={{
+        borderColor: 'rgba(99,102,241,0.35)',
+        boxShadow: '0 0 24px rgba(99,102,241,0.08), 0 4px 12px rgba(0,0,0,0.2)',
+      }}
+      className={`bg-bg-card border border-border rounded-xl p-5 transition-colors duration-300 ${className}`}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+/* SVG gradient defs for bar charts */
+function BarGradientDefs() {
+  return (
+    <defs>
+      <linearGradient id="barGradientV" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stopColor="#818cf8" stopOpacity={1} />
+        <stop offset="100%" stopColor="#6366f1" stopOpacity={0.8} />
+      </linearGradient>
+      <linearGradient id="barGradientH" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stopColor="#6366f1" stopOpacity={0.8} />
+        <stop offset="100%" stopColor="#818cf8" stopOpacity={1} />
+      </linearGradient>
+    </defs>
+  );
+}
+
+/* Shimmer bar overlay for progress bars */
+function ShimmerBar({ width, delay }: { width: string; delay: number }) {
+  return (
+    <div className="w-full bg-bg-primary rounded-full h-2 overflow-hidden relative">
+      <motion.div
+        className="h-full rounded-full bg-gradient-to-r from-accent to-accent-light relative overflow-hidden"
+        initial={{ width: 0 }}
+        animate={{ width }}
+        transition={{ delay, duration: 0.8 }}
+      >
+        {/* Shimmer sweep */}
+        <motion.div
+          className="absolute inset-0"
+          style={{
+            background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.2) 50%, transparent 100%)',
+            backgroundSize: '200% 100%',
+          }}
+          animate={{ backgroundPosition: ['-200% 0', '200% 0'] }}
+          transition={{
+            delay: delay + 0.8,
+            duration: 1.5,
+            repeat: Infinity,
+            repeatDelay: 2,
+            ease: 'easeInOut',
+          }}
+        />
+      </motion.div>
+    </div>
+  );
+}
+
 export function DashboardPage() {
   return (
     <div className="flex-1 p-6 overflow-auto">
-      <div className="mb-6">
-        <h2 className="text-xl font-bold text-text-primary mb-1">Dashboard</h2>
-        <p className="text-sm text-text-secondary font-light">Aggregate intelligence across 4 pension fund documents</p>
+      <div className="mb-6 flex items-end justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-text-primary mb-1">Dashboard</h2>
+          <p className="text-sm text-text-secondary font-light">Aggregate intelligence across 4 pension fund documents</p>
+        </div>
+        {/* Time Period badge */}
+        <motion.div
+          initial={{ opacity: 0, x: 10 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.15, duration: 0.4 }}
+          className="px-3 py-1.5 rounded-lg bg-bg-card border border-border text-xs text-text-muted font-medium"
+        >
+          Nov 2025 &mdash; Jan 2026
+        </motion.div>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         {/* Commitments by Asset Class - Donut */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="bg-bg-card border border-border rounded-xl p-5"
-        >
+        <ChartCard delay={0.1}>
           <h3 className="text-sm font-semibold text-text-secondary mb-4">Commitments by Asset Class</h3>
           <ResponsiveContainer width="100%" height={280}>
             <PieChart>
@@ -107,59 +186,46 @@ export function DashboardPage() {
               <span className="font-semibold">Public Equities: -$2.0B</span> — T. Rowe Price termination (outflow)
             </p>
           </div>
-        </motion.div>
+        </ChartCard>
 
         {/* Commitment Activity Over Time */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="bg-bg-card border border-border rounded-xl p-5"
-        >
+        <ChartCard delay={0.2}>
           <h3 className="text-sm font-semibold text-text-secondary mb-4">Commitment Activity Over Time</h3>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={commitmentsByMonth}>
+              <BarGradientDefs />
               <CartesianGrid strokeDasharray="3 3" stroke="#2a2b38" vertical={false} />
               <XAxis dataKey="month" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v}M`} />
               <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(99,102,241,0.08)' }} />
-              <Bar dataKey="value" fill="#6366f1" radius={[4, 4, 0, 0]} animationDuration={1000} />
+              <Bar dataKey="value" fill="url(#barGradientV)" radius={[4, 4, 0, 0]} animationDuration={1000} />
             </BarChart>
           </ResponsiveContainer>
-        </motion.div>
+        </ChartCard>
 
         {/* Top GPs by Capital */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="bg-bg-card border border-border rounded-xl p-5"
-        >
+        <ChartCard delay={0.3}>
           <h3 className="text-sm font-semibold text-text-secondary mb-4">Top GPs by Capital Committed</h3>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={topGPs} layout="vertical">
+              <BarGradientDefs />
               <CartesianGrid strokeDasharray="3 3" stroke="#2a2b38" horizontal={false} />
               <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v}M`} />
               <YAxis type="category" dataKey="name" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} tickLine={false} width={110} />
               <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(99,102,241,0.08)' }} />
-              <Bar dataKey="value" fill="#818cf8" radius={[0, 4, 4, 0]} animationDuration={1000} />
+              <Bar dataKey="value" fill="url(#barGradientH)" radius={[0, 4, 4, 0]} animationDuration={1000} />
             </BarChart>
           </ResponsiveContainer>
-        </motion.div>
+        </ChartCard>
 
-        {/* LP Activity */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4 }}
-          className="bg-bg-card border border-border rounded-xl p-5"
-        >
+        {/* LP Activity — slides in from RIGHT with stagger */}
+        <ChartCard delay={0.4}>
           <h3 className="text-sm font-semibold text-text-secondary mb-4">LP Activity Overview</h3>
           <div className="space-y-3">
             {lpActivity.map((lp, i) => (
               <motion.div
                 key={lp.name}
-                initial={{ opacity: 0, x: -10 }}
+                initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: 0.5 + i * 0.1 }}
                 className="bg-bg-tertiary rounded-lg p-4 border border-border/50"
@@ -168,21 +234,17 @@ export function DashboardPage() {
                   <span className="text-sm font-medium text-text-primary">{lp.name}</span>
                   <span className="text-xs text-text-muted">{lp.transactions} transactions</span>
                 </div>
-                <div className="w-full bg-bg-primary rounded-full h-2 overflow-hidden">
-                  <motion.div
-                    className="h-full rounded-full bg-gradient-to-r from-accent to-accent-light"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${Math.min((lp.capital / 1100) * 100, 100)}%` }}
-                    transition={{ delay: 0.7 + i * 0.1, duration: 0.8 }}
-                  />
-                </div>
+                <ShimmerBar
+                  width={`${Math.min((lp.capital / 1100) * 100, 100)}%`}
+                  delay={0.7 + i * 0.1}
+                />
                 <div className="mt-1.5 text-xs text-text-muted">
                   ~${lp.capital}M committed
                 </div>
               </motion.div>
             ))}
           </div>
-        </motion.div>
+        </ChartCard>
       </div>
     </div>
   );
