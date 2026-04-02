@@ -1,8 +1,11 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bell, Filter, Download, Bookmark, ChevronDown, ChevronUp, FileText, TrendingUp, AlertTriangle, Zap, DollarSign, BarChart3, ArrowUpDown } from 'lucide-react';
+import { Bell, Filter, Download, Bookmark, ChevronDown, ChevronUp, FileText, TrendingUp, AlertTriangle, Zap, DollarSign, BarChart3, ArrowUpDown, X } from 'lucide-react';
 import { metrics, signals } from '../data/metrics';
 import { useCountUp } from '../hooks/useCountUp';
+import { useToast } from '../hooks/useToast';
+import { ToastContainer } from '../components/Toast';
+import { exportToCSV, exportToJSON } from '../utils/export';
 import type { Metric } from '../data/types';
 
 const metricTypes = ['All', 'Commitment', 'Termination', 'Performance', 'Fee Structure', 'AUM', 'NAV', 'Co-Investment', 'Target Fund Size'];
@@ -37,24 +40,19 @@ type SortField = 'date' | 'lp' | 'fund' | 'gp' | 'metric' | 'value' | 'asset_cla
 type SortDir = 'asc' | 'desc';
 
 function highlightEvidence(evidence: string, value: string): React.ReactNode {
-  // Try to find a meaningful substring of the value in the evidence
   const candidates: string[] = [];
 
-  // Try the full value first (e.g., "$243,545,000")
   candidates.push(value);
 
-  // Extract the leading dollar/euro amount (e.g., "$2 billion", "$150 million", "$7.5M")
-  const numMatch = value.match(/^[\$€]?([\d,.]+)/);
+  const numMatch = value.match(/^[\$\u20AC]?([\d,.]+)/);
   if (numMatch) {
     const rawNum = numMatch[1].replace(/,/g, '');
     const num = parseFloat(rawNum);
-    // Try common written forms
     if (num >= 1_000_000_000) candidates.push(`$${num / 1_000_000_000} billion`);
     if (num >= 1_000_000) candidates.push(`$${num / 1_000_000}M`, `$${num / 1_000_000} million`);
-    candidates.push(numMatch[0]); // e.g. "$243,545,000" or "€250,000,000"
+    candidates.push(numMatch[0]);
   }
 
-  // Try percentage values (e.g., "16.7%", "59.6%")
   const pctMatch = value.match(/([\d.]+%)/);
   if (pctMatch) candidates.push(pctMatch[1]);
 
@@ -81,6 +79,15 @@ export function ResultsPage() {
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const [sortField, setSortField] = useState<SortField>('date');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [alertDismissed, setAlertDismissed] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showSavePopover, setShowSavePopover] = useState(false);
+  const [saveTrackerName, setSaveTrackerName] = useState('Custom search');
+  const [saveFrequency, setSaveFrequency] = useState('Weekly');
+  const { toasts, showToast, dismissToast } = useToast();
+
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  const savePopoverRef = useRef<HTMLDivElement>(null);
 
   const metricsCount = useCountUp(31, 1200);
   const commitmentsCount = useCountUp(12, 1200);
@@ -109,6 +116,58 @@ export function ResultsPage() {
     }
   };
 
+  // Close dropdowns on click outside
+  const handleClickOutside = useCallback((e: MouseEvent) => {
+    if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+      setShowExportMenu(false);
+    }
+    if (savePopoverRef.current && !savePopoverRef.current.contains(e.target as Node)) {
+      setShowSavePopover(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [handleClickOutside]);
+
+  const handleExportCSV = () => {
+    exportToCSV(filtered, 'control-f-metrics');
+    showToast(`Exported ${filtered.length} metrics as CSV`, 'success');
+    setShowExportMenu(false);
+  };
+
+  const handleExportJSON = () => {
+    exportToJSON(filtered, 'control-f-metrics');
+    showToast(`Exported ${filtered.length} metrics as JSON`, 'success');
+    setShowExportMenu(false);
+  };
+
+  const handleSaveSearch = () => {
+    const existingRaw = sessionStorage.getItem('saved_trackers');
+    const existing = existingRaw ? JSON.parse(existingRaw) : [];
+    const newTracker = {
+      id: `tracker-${Date.now()}`,
+      name: saveTrackerName || 'Custom search',
+      status: 'active' as const,
+      sources: 0,
+      metrics: filtered.length,
+      last_match: 'Never',
+      frequency: saveFrequency,
+      query: `${metricFilter} / ${assetFilter}`,
+      filters: {
+        metricType: metricFilter !== 'All' ? metricFilter : undefined,
+        assetClass: assetFilter !== 'All' ? assetFilter : undefined,
+      },
+    };
+    existing.push(newTracker);
+    sessionStorage.setItem('saved_trackers', JSON.stringify(existing));
+    showToast('Search saved as tracker', 'success');
+    setShowSavePopover(false);
+    setSaveTrackerName('Custom search');
+    setSaveFrequency('Weekly');
+  };
+
   const SortIcon = ({ field }: { field: SortField }) => (
     <span className="inline-flex ml-1">
       {sortField === field ? (
@@ -122,21 +181,33 @@ export function ResultsPage() {
   return (
     <div className="flex-1 p-6 overflow-auto">
       {/* Alert Banner */}
-      <motion.div
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="mb-6 p-4 rounded-xl bg-gradient-to-r from-accent-glow to-transparent border border-accent/20 flex items-center gap-3"
-      >
-        <motion.div
-          animate={{ scale: [1, 1.15, 1] }}
-          transition={{ duration: 2, repeat: Infinity }}
-        >
-          <Bell className="w-5 h-5 text-accent-light" />
-        </motion.div>
-        <p className="text-sm text-text-primary">
-          <span className="font-semibold">Change detected</span> — DCRB total fund value reached new high of <span className="text-accent-light font-semibold">$14.1B</span> (up from $13.2B). Calendar year 2025 net return: 14.1%
-        </p>
-      </motion.div>
+      <AnimatePresence>
+        {!alertDismissed && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, height: 0, marginBottom: 0, padding: 0, overflow: 'hidden' }}
+            transition={{ duration: 0.3 }}
+            className="mb-6 p-4 rounded-xl bg-gradient-to-r from-accent-glow to-transparent border border-accent/20 flex items-center gap-3"
+          >
+            <motion.div
+              animate={{ scale: [1, 1.15, 1] }}
+              transition={{ duration: 2, repeat: Infinity }}
+            >
+              <Bell className="w-5 h-5 text-accent-light" />
+            </motion.div>
+            <p className="text-sm text-text-primary flex-1">
+              <span className="font-semibold">Change detected</span> — DCRB total fund value reached new high of <span className="text-accent-light font-semibold">$14.1B</span> (up from $13.2B). Calendar year 2025 net return: 14.1%
+            </p>
+            <button
+              onClick={() => setAlertDismissed(true)}
+              className="text-text-muted hover:text-text-primary transition-colors cursor-pointer p-1 rounded-lg hover:bg-bg-hover shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Summary Stats */}
       <div className="grid grid-cols-4 gap-4 mb-6">
@@ -224,12 +295,103 @@ export function ResultsPage() {
           </motion.span>
         </AnimatePresence>
         <div className="ml-auto flex gap-2">
-          <button className="px-3 py-1.5 rounded-lg bg-bg-card border border-border text-sm text-text-secondary hover:text-text-primary hover:border-accent/40 transition-all flex items-center gap-1.5 cursor-pointer">
-            <Bookmark className="w-3.5 h-3.5" /> Save Search
-          </button>
-          <button className="px-3 py-1.5 rounded-lg bg-bg-card border border-border text-sm text-text-secondary hover:text-text-primary hover:border-accent/40 transition-all flex items-center gap-1.5 cursor-pointer">
-            <Download className="w-3.5 h-3.5" /> Export
-          </button>
+          {/* Save Search Button */}
+          <div className="relative" ref={savePopoverRef}>
+            <button
+              onClick={() => { setShowSavePopover(!showSavePopover); setShowExportMenu(false); }}
+              className="px-3 py-1.5 rounded-lg bg-bg-card border border-border text-sm text-text-secondary hover:text-text-primary hover:border-accent/40 transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Bookmark className="w-3.5 h-3.5" /> Save Search
+            </button>
+            <AnimatePresence>
+              {showSavePopover && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 4 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 4 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute right-0 top-10 w-72 bg-bg-secondary border border-border rounded-xl shadow-xl z-20 p-4"
+                >
+                  <h4 className="text-sm font-semibold text-text-primary mb-3">Save as Tracker</h4>
+                  <div className="mb-3">
+                    <label className="text-xs text-text-muted mb-1 block">Name</label>
+                    <input
+                      type="text"
+                      value={saveTrackerName}
+                      onChange={(e) => setSaveTrackerName(e.target.value)}
+                      className="w-full bg-bg-card border border-border rounded-lg px-3 py-1.5 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/50"
+                      placeholder="Tracker name..."
+                    />
+                  </div>
+                  <div className="mb-4">
+                    <label className="text-xs text-text-muted mb-1 block">Frequency</label>
+                    <div className="relative">
+                      <select
+                        value={saveFrequency}
+                        onChange={(e) => setSaveFrequency(e.target.value)}
+                        className="w-full bg-bg-card border border-border rounded-lg px-3 py-1.5 text-sm text-text-primary focus:outline-none focus:border-accent/50 appearance-none pr-8 cursor-pointer"
+                      >
+                        <option value="Daily">Daily</option>
+                        <option value="Weekly">Weekly</option>
+                        <option value="Monthly">Monthly</option>
+                      </select>
+                      <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted pointer-events-none" />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleSaveSearch}
+                      className="flex-1 py-1.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-light transition-colors cursor-pointer"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={() => setShowSavePopover(false)}
+                      className="px-3 py-1.5 rounded-lg bg-bg-hover border border-border text-sm text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Export Button */}
+          <div className="relative" ref={exportMenuRef}>
+            <button
+              onClick={() => { setShowExportMenu(!showExportMenu); setShowSavePopover(false); }}
+              className="px-3 py-1.5 rounded-lg bg-bg-card border border-border text-sm text-text-secondary hover:text-text-primary hover:border-accent/40 transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" /> Export
+            </button>
+            <AnimatePresence>
+              {showExportMenu && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 4 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 4 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute right-0 top-10 w-48 bg-bg-secondary border border-border rounded-lg shadow-xl z-20 overflow-hidden"
+                >
+                  <button
+                    onClick={handleExportCSV}
+                    className="w-full px-4 py-2.5 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors text-left cursor-pointer flex items-center gap-2"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    Export as CSV
+                  </button>
+                  <button
+                    onClick={handleExportJSON}
+                    className="w-full px-4 py-2.5 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors text-left cursor-pointer flex items-center gap-2"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    Export as JSON
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </div>
 
@@ -273,6 +435,8 @@ export function ResultsPage() {
           </tbody>
         </table>
       </div>
+
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }
