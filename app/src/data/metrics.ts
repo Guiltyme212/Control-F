@@ -446,3 +446,40 @@ export const trackers: Tracker[] = [
     frequency: "Weekly"
   }
 ];
+
+export function getMetricsByLP(lp: string): Metric[] {
+  return metrics.filter((m) => m.lp === lp);
+}
+
+export function getMetricsByGP(gp: string): Metric[] {
+  return metrics.filter((m) => m.gp === gp);
+}
+
+export function getUniqueAssetClasses(): string[] {
+  return [...new Set(metrics.map((m) => m.asset_class))];
+}
+
+export function getUniqueLPs(): string[] {
+  return [...new Set(metrics.map((m) => m.lp))];
+}
+
+export function getUniqueGPs(): string[] {
+  return [...new Set(metrics.map((m) => m.gp))];
+}
+
+export function getCommitmentTotal(): number {
+  return metrics
+    .filter((m) => m.metric === 'Commitment')
+    .reduce((sum, m) => {
+      const rawValue = m.value.replace(/,/g, '');
+      const euroMatch = rawValue.match(/\u20AC([\d.]+)/);
+      if (euroMatch) {
+        return sum + parseFloat(euroMatch[1]) * 1.08;
+      }
+      const usdMatch = rawValue.match(/\$([\d.]+)/);
+      if (usdMatch) {
+        return sum + parseFloat(usdMatch[1]);
+      }
+      return sum;
+    }, 0);
+}
