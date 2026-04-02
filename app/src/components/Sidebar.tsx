@@ -2,11 +2,11 @@ import { motion } from 'framer-motion';
 import { Search, LayoutGrid, BarChart3, Bell, Upload } from 'lucide-react';
 import type { Page } from '../data/types';
 
-const navItems: { id: Page; label: string; icon: React.ElementType }[] = [
+const navItems: { id: Page; label: string; icon: React.ElementType; badge?: string }[] = [
   { id: 'search', label: 'Search', icon: Search },
-  { id: 'results', label: 'Results', icon: LayoutGrid },
+  { id: 'results', label: 'Results', icon: LayoutGrid, badge: '31' },
   { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
-  { id: 'trackers', label: 'Trackers', icon: Bell },
+  { id: 'trackers', label: 'Trackers', icon: Bell, badge: '3' },
   { id: 'upload', label: 'Upload', icon: Upload },
 ];
 
@@ -26,6 +26,18 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
           <span className="text-lg font-semibold text-text-primary tracking-tight">
             CONTROL <span className="text-accent-light">F</span>
           </span>
+          {/* Live indicator */}
+          <div className="flex items-center gap-1.5 ml-auto">
+            <motion.div
+              className="w-1.5 h-1.5 rounded-full bg-green"
+              animate={{
+                opacity: [1, 0.4, 1],
+                scale: [1, 0.85, 1],
+              }}
+              transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+            />
+            <span className="text-xs text-green font-medium">Live</span>
+          </div>
         </div>
       </div>
 
@@ -33,35 +45,49 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
         {navItems.map((item) => {
           const isActive = activePage === item.id;
           return (
-            <button
+            <motion.button
               key={item.id}
               onClick={() => onNavigate(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer relative ${
+              whileHover={{ x: 2 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-200 cursor-pointer relative ${
                 isActive
-                  ? 'text-text-primary bg-bg-hover'
+                  ? 'text-text-primary'
                   : 'text-text-secondary hover:text-text-primary hover:bg-bg-hover/50'
               }`}
             >
               {isActive && (
                 <motion.div
                   layoutId="sidebar-active"
-                  className="absolute inset-0 rounded-lg bg-bg-hover"
+                  className="absolute inset-0 rounded-lg"
+                  style={{
+                    background: 'linear-gradient(90deg, rgba(99,102,241,0.18) 0%, rgba(99,102,241,0.06) 60%, transparent 100%)',
+                    borderLeft: '2px solid rgba(99,102,241,0.6)',
+                  }}
                   transition={{ type: 'spring', stiffness: 350, damping: 30 }}
                 />
               )}
               <item.icon className="w-4.5 h-4.5 relative z-10" />
               <span className="relative z-10">{item.label}</span>
-              {item.id === 'results' && activePage !== 'search' && (
-                <span className="ml-auto relative z-10 bg-accent/20 text-accent-light text-xs px-1.5 py-0.5 rounded-full">
-                  31
+              {item.badge && (
+                <span className="ml-auto relative z-10 bg-accent/20 text-accent-light text-xs px-1.5 py-0.5 rounded-full font-medium">
+                  {item.badge}
                 </span>
               )}
-            </button>
+            </motion.button>
           );
         })}
       </nav>
 
-      <div className="p-4 border-t border-border">
+      {/* Gradient separator before footer */}
+      <div
+        className="mx-4 h-px"
+        style={{
+          background: 'linear-gradient(90deg, transparent 0%, var(--color-border-light) 50%, transparent 100%)',
+        }}
+      />
+
+      <div className="p-4">
         <div className="text-xs text-text-muted font-light">
           controlf.ai
         </div>
