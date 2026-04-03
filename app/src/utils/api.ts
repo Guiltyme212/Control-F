@@ -1,5 +1,12 @@
 import type { Metric, ExtractedData } from '../data/types';
 
+const FIRECRAWL_API_KEY = 'fc-36ddfed03f4645f3af6db877ab2d1574';
+
+export interface ScrapedPdfLink {
+  url: string;
+  filename: string;
+}
+
 const SYSTEM_PROMPT = `You are a financial data extraction agent specialized in US public pension fund documents.
 
 You will receive a PDF document from a public pension fund (board meeting minutes, transaction reports, investment memos, performance reports, IPC reports).
@@ -120,7 +127,12 @@ export async function extractMetricsFromPDF(
     throw new Error(`API error (${response.status}): ${errorBody || response.statusText}`);
   }
 
-  const data = await response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error('API returned invalid JSON response.');
+  }
 
   // Extract the text content from the response
   const textBlock = data.content?.find(
@@ -152,6 +164,163 @@ export async function extractMetricsFromPDF(
     value: am.value || '',
     asset_class: am.asset_class || '',
     source: file.name,
+    page: am.page_reference ?? 0,
+    evidence: am.evidence_text || '',
+    confidence: am.confidence || 'medium',
+  }));
+
+  return {
+    metrics,
+    signals: parsed.cross_reference_signals || [],
+    metadata: parsed.document_metadata || {
+      source_organization: '',
+      document_type: '',
+      document_date: '',
+      reporting_period: '',
+    },
+  };
+}
+
+export async function scrapeUrlForPdfs(url: string): Promise<ScrapedPdfLink[]> {
+  const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${FIRECRAWL_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ url, formats: ['links', 'rawHtml'] }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
+    throw new Error(`Scrape failed (${response.status}): ${errorBody || response.statusText}`);
+  }
+
+  const data = await response.json();
+  if (!data.success) {
+    throw new Error(data.error || 'Firecrawl scrape failed');
+  }
+
+  const candidates = new Set<string>();
+
+  // Source 1: links array (traditional <a href> links)
+  const allLinks: string[] = data.data?.links || [];
+  for (const link of allLinks) {
+    if (/\.pdf(\?|#|$)/i.test(link)) candidates.add(link);
+  }
+
+  // Source 2: raw HTML — extract PDF URLs from src, href, data-* attributes, and inline references
+  const rawHtml: string = data.data?.rawHtml || '';
+  if (rawHtml) {
+    const htmlPdfUrls = rawHtml.match(/https?:\/\/[^\s"'<>]+\.pdf/gi) || [];
+    for (const u of htmlPdfUrls) candidates.add(u);
+  }
+
+  const pdfLinks: ScrapedPdfLink[] = [];
+  for (const raw of candidates) {
+    try {
+      // Clean up HTML entities and trailing fragments
+      const cleaned = raw.replace(/&amp;/g, '&').split(/[#?]/)[0];
+      const fullUrl = cleaned.startsWith('http') ? cleaned : new URL(cleaned, url).href;
+      const pathname = new URL(fullUrl).pathname;
+      const filename = decodeURIComponent(pathname.split('/').pop() || 'document.pdf');
+      pdfLinks.push({ url: fullUrl, filename });
+    } catch {
+      // Skip malformed URLs
+    }
+  }
+
+  // Deduplicate by URL
+  const seen = new Set<string>();
+  return pdfLinks.filter((link) => {
+    if (seen.has(link.url)) return false;
+    seen.add(link.url);
+    return true;
+  });
+}
+
+export async function extractMetricsFromPdfUrl(
+  pdfUrl: string,
+  apiKey: string
+): Promise<ExtractionResult> {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8000,
+      system: SYSTEM_PROMPT,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'url', url: pdfUrl },
+            },
+            {
+              type: 'text',
+              text: 'Extract all financial metrics from this document.',
+            },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (response.status === 401) {
+    throw new Error('Invalid API key. Please check your Anthropic API key in settings.');
+  }
+  if (response.status === 429) {
+    throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+  }
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
+    throw new Error(`API error (${response.status}): ${errorBody || response.statusText}`);
+  }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error('API returned invalid JSON response.');
+  }
+  const textBlock = data.content?.find(
+    (block: { type: string }) => block.type === 'text'
+  );
+  if (!textBlock?.text) {
+    throw new Error('No text content in API response');
+  }
+
+  let parsed: ExtractedData;
+  try {
+    let jsonStr = textBlock.text.trim();
+    if (jsonStr.startsWith('```')) {
+      jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+    }
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    throw new Error('Failed to parse extraction results.');
+  }
+
+  const pdfFilename = decodeURIComponent(
+    new URL(pdfUrl).pathname.split('/').pop() || 'scraped.pdf'
+  );
+
+  const metrics: Metric[] = (parsed.extracted_metrics || []).map((am) => ({
+    date: am.date || '',
+    lp: am.lp_name || '',
+    fund: am.fund_name || '',
+    gp: am.gp_manager || '',
+    metric: am.metric_type || '',
+    value: am.value || '',
+    asset_class: am.asset_class || '',
+    source: pdfFilename,
     page: am.page_reference ?? 0,
     evidence: am.evidence_text || '',
     confidence: am.confidence || 'medium',

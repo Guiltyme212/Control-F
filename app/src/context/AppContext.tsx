@@ -18,9 +18,16 @@ interface AppProviderProps {
 
 export function AppProvider({ children }: AppProviderProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [apiKey, setApiKeyState] = useState(
-    () => sessionStorage.getItem('anthropic_key') || ''
-  );
+  const [apiKey, setApiKeyState] = useState(() => {
+    const stored = sessionStorage.getItem('anthropic_key');
+    if (stored) return stored;
+    const envKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+    if (envKey) {
+      sessionStorage.setItem('anthropic_key', envKey);
+      return envKey;
+    }
+    return '';
+  });
   const [hasSearched, setHasSearched] = useState(false);
 
   const setApiKey = useCallback((key: string) => {
