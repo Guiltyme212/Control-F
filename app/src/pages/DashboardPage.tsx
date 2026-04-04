@@ -1,63 +1,28 @@
+import { useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
-  TrendingDown, TrendingUp, Bell, Activity, FileText, Zap,
-  DollarSign, AlertTriangle, Sparkles, Building2, Clock,
+  TrendingDown, TrendingUp, Activity, FileText, Zap,
+  DollarSign, AlertTriangle, Sparkles, Building2, Clock, Database,
 } from 'lucide-react';
+import type { Tracker } from '../data/types';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { useAppContext } from '../context/AppContext';
 import { useCountUp } from '../hooks/useCountUp';
-
-/* ================================================================
-   Static chart data (derived from metrics.ts canonical data)
-   ================================================================ */
-
-const commitmentsByAsset = [
-  { name: 'Infrastructure', value: 1131, fill: '#6366f1' },
-  { name: 'Credit', value: 200, fill: '#3b82f6' },
-  { name: 'Private Equity', value: 113, fill: '#8b5cf6' },
-  { name: 'Natural Resources', value: 108, fill: '#f97316' },
-  { name: 'Real Assets', value: 324, fill: '#06b6d4' },
-];
-
-const commitmentsByMonth = [
-  { month: 'Apr 2025', value: 8 },
-  { month: 'Oct 2025', value: 15 },
-  { month: 'Nov 2025', value: 1087 },
-  { month: 'Dec 2025', value: 100 },
-  { month: 'Jan 2026', value: 450 },
-];
-
-const topGPs = [
-  { name: 'CVC DIF Mgmt', value: 540 },
-  { name: 'Stonepeak', value: 324 },
-  { name: 'Ardian', value: 300 },
-  { name: 'BlackRock/Kreos', value: 200 },
-  { name: 'Fund AN (Undiscl.)', value: 150 },
-  { name: 'Quantum Energy', value: 100 },
-  { name: 'Updata Partners', value: 100 },
-];
-
-const lpActivity = [
-  { name: 'NY State CRF', transactions: 7, capital: 1087 },
-  { name: 'DCRB', transactions: 4, capital: 464 },
-  { name: 'NJ DOI', transactions: 5, capital: 300 },
-  { name: 'Santa Barbara', transactions: 4, capital: 30 },
-];
+import { metrics, trackers, getCommitmentTotal } from '../data/metrics';
 
 const COLORS = ['#6366f1', '#3b82f6', '#8b5cf6', '#f97316', '#06b6d4'];
 
-const timelineEvents = [
-  { date: 'Jan 29, 2026', type: 'Commitment', color: 'bg-green', headline: 'DCRB approves $150M to undisclosed infrastructure fund', amount: '$150M', lp: 'DCRB', isNew: true },
-  { date: 'Jan 22, 2026', type: 'Commitment', color: 'bg-green', headline: 'NJ DOI commits $300M to Ardian infra secondaries', amount: '$300M', lp: 'NJ DOI', isNew: true },
-  { date: 'Dec 5, 2025', type: 'Commitment', color: 'bg-green', headline: 'DCRB closes $100M re-up in Updata Fund VIII', amount: '$100M', lp: 'DCRB', isNew: false },
-  { date: 'Nov 26, 2025', type: 'Commitment', color: 'bg-green', headline: 'DCRB closes $100M in Quantum Energy Partners IX', amount: '$100M', lp: 'DCRB', isNew: false },
-  { date: 'Nov 18, 2025', type: 'Infrastructure', color: 'bg-accent', headline: 'NY State CRF commits EUR 500M to CVC DIF (two vehicles)', amount: '~$540M', lp: 'NY CRF', isNew: false },
-  { date: 'Nov 4, 2025', type: 'Termination', color: 'bg-red', headline: 'NY State CRF terminates T. Rowe Price -- $2B exits', amount: '-$2.0B', lp: 'NY CRF', isNew: false },
-  { date: 'Nov 3, 2025', type: 'High Conviction', color: 'bg-cyan', headline: 'NY State CRF places $323M with Stonepeak (fund + co-invest)', amount: '$323M', lp: 'NY CRF', isNew: false },
-];
+function parseValue(val: string): number {
+  const raw = val.replace(/,/g, '');
+  const euroMatch = raw.match(/€([\d.]+)/);
+  if (euroMatch) return parseFloat(euroMatch[1]) * 1.08;
+  const usdMatch = raw.match(/\$([\d.]+)/);
+  if (usdMatch) return parseFloat(usdMatch[1]);
+  return 0;
+}
 
 /* ================================================================
    Shared sub-components
@@ -175,16 +140,206 @@ function HeroStat({ label, value, subtitle, icon: Icon, delay }: {
 }
 
 /* ================================================================
+   Tracker Card
+   ================================================================ */
+
+function TrackerCard({ tracker, index, isHighlighted }: { tracker: Tracker; index: number; isHighlighted?: boolean }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.15 + index * 0.08, duration: 0.5, ease }}
+      whileHover={{ y: -2, transition: { duration: 0.25, ease: 'easeOut' } }}
+      className={`group relative rounded-xl p-4 transition-all cursor-pointer overflow-hidden ${
+        isHighlighted
+          ? 'bg-gradient-to-br from-accent/8 to-bg-card/90 border border-accent/25'
+          : tracker.status === 'paused'
+            ? 'bg-bg-card/60 border border-border/60'
+            : 'bg-bg-card/90 border border-border hover:border-accent/20'
+      }`}
+    >
+      {/* Hover glow */}
+      <div
+        className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+        style={{ background: 'radial-gradient(ellipse at 30% 0%, rgba(99,102,241,0.05) 0%, transparent 70%)' }}
+      />
+
+      <div className="relative">
+        {/* Header */}
+        <div className="flex items-start justify-between mb-2.5">
+          <div className="flex items-center gap-2.5 min-w-0">
+            {tracker.status === 'active' ? (
+              <motion.div
+                className="w-2 h-2 rounded-full bg-green shrink-0 mt-1"
+                animate={{ opacity: [1, 0.4, 1] }}
+                transition={{ duration: 2.5, repeat: Infinity, ease: 'easeInOut' }}
+              />
+            ) : (
+              <div className="w-2 h-2 rounded-full bg-text-muted/30 shrink-0 mt-1" />
+            )}
+            <h4 className="text-sm font-semibold text-text-primary truncate">{tracker.name}</h4>
+          </div>
+          <div className="flex items-center gap-2 shrink-0 ml-2">
+            {(tracker.newAlerts ?? 0) > 0 && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-accent/15 text-accent-light">
+                {tracker.newAlerts} new
+              </span>
+            )}
+            {tracker.status === 'paused' && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-text-muted/10 text-text-muted">
+                Paused
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Latest finding */}
+        {tracker.latestFinding && (
+          <p className={`text-xs leading-relaxed mb-3 line-clamp-2 ${
+            tracker.status === 'paused' ? 'text-text-muted/60' : 'text-text-secondary'
+          }`}>
+            {tracker.latestFinding}
+          </p>
+        )}
+
+        {/* Metadata row */}
+        <div className="flex items-center gap-2.5 text-[11px] text-text-muted">
+          <span className="flex items-center gap-1">
+            <Database className="w-3 h-3" />
+            {tracker.sources}
+          </span>
+          <span className="text-border">·</span>
+          <span className="flex items-center gap-1">
+            <Activity className="w-3 h-3" />
+            {tracker.metrics}
+          </span>
+          <span className="text-border">·</span>
+          <span className="flex items-center gap-1">
+            <Clock className="w-3 h-3" />
+            {tracker.frequency}
+          </span>
+          <span className="ml-auto text-text-muted/50">{tracker.last_match}</span>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+/* ================================================================
    Main Dashboard
    ================================================================ */
 
 export function DashboardPage() {
   const { searchQuery } = useAppContext();
 
-  const capitalCount = useCountUp(176, 1400, true, { formatter: (n) => `$${(n / 100).toFixed(2)}B` });
-  const metricsCount = useCountUp(31, 1200);
-  const signalsCount = useCountUp(4, 1000);
-  const gpCount = useCountUp(12, 800);
+  const allTrackers = useMemo(() => {
+    if (searchQuery) {
+      const searchTracker: Tracker = {
+        id: 'search-active',
+        name: searchQuery,
+        status: 'active',
+        sources: 4,
+        metrics: 31,
+        last_match: 'Just now',
+        frequency: 'Weekly',
+        latestFinding: '8 new metrics found across 4 pension fund documents',
+        newAlerts: 8,
+      };
+      return [searchTracker, ...trackers];
+    }
+    return trackers;
+  }, [searchQuery]);
+
+  const totalCapital = useMemo(() => getCommitmentTotal(), []);
+  const capitalTarget = useMemo(() => Math.round(totalCapital / 10_000_000), [totalCapital]);
+  const capitalCount = useCountUp(capitalTarget, 1400, true, { formatter: (n) => `$${(n / 100).toFixed(2)}B` });
+  const metricsCount = useCountUp(metrics.length, 1200);
+
+  const commitmentsByAsset = useMemo(() => {
+    const map: Record<string, number> = {};
+    metrics
+      .filter(m => m.metric === 'Commitment')
+      .forEach(m => {
+        const val = parseValue(m.value);
+        map[m.asset_class] = (map[m.asset_class] || 0) + val;
+      });
+    const COLORS_MAP: Record<string, string> = {
+      'Infrastructure': '#6366f1', 'Credit': '#3b82f6', 'Private Equity': '#8b5cf6',
+      'Natural Resources': '#f97316', 'Real Assets': '#06b6d4', 'Real Estate': '#ec4899',
+      'Public Equities': '#10b981',
+    };
+    return Object.entries(map)
+      .map(([name, value]) => ({ name, value: Math.round(value / 1_000_000), fill: COLORS_MAP[name] || '#6b7280' }))
+      .sort((a, b) => b.value - a.value);
+  }, []);
+
+  const commitmentsByMonth = useMemo(() => {
+    const map: Record<string, number> = {};
+    metrics
+      .filter(m => m.metric === 'Commitment')
+      .forEach(m => {
+        const d = new Date(m.date);
+        const key = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+        map[key] = (map[key] || 0) + Math.round(parseValue(m.value) / 1_000_000);
+      });
+    return Object.entries(map)
+      .sort(([a], [b]) => new Date(a).getTime() - new Date(b).getTime())
+      .map(([month, value]) => ({ month, value }));
+  }, []);
+
+  const topGPs = useMemo(() => {
+    const map: Record<string, number> = {};
+    metrics
+      .filter(m => m.metric === 'Commitment')
+      .forEach(m => {
+        const val = Math.round(parseValue(m.value) / 1_000_000);
+        map[m.gp] = (map[m.gp] || 0) + val;
+      });
+    return Object.entries(map)
+      .map(([name, value]) => ({ name: name.length > 16 ? name.slice(0, 14) + '...' : name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 8);
+  }, []);
+
+  const lpActivity = useMemo(() => {
+    const map: Record<string, { transactions: number; capital: number }> = {};
+    metrics.forEach(m => {
+      if (!map[m.lp]) map[m.lp] = { transactions: 0, capital: 0 };
+      map[m.lp].transactions += 1;
+      if (m.metric === 'Commitment') {
+        map[m.lp].capital += Math.round(parseValue(m.value) / 1_000_000);
+      }
+    });
+    return Object.entries(map)
+      .map(([name, data]) => ({ name, ...data }))
+      .sort((a, b) => b.capital - a.capital);
+  }, []);
+
+  const timelineEvents = useMemo(() => {
+    const sorted = [...metrics].sort((a, b) => b.date.localeCompare(a.date));
+    const now = new Date();
+    const sevenDaysAgo = new Date(now);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    return sorted.slice(0, 10).map(m => {
+      const d = new Date(m.date);
+      const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const val = Math.round(parseValue(m.value) / 1_000_000);
+      const isTermination = m.metric === 'Termination';
+      const color = isTermination ? 'bg-red' : m.metric === 'Performance' ? 'bg-blue' : m.metric === 'Commitment' ? 'bg-green' : 'bg-accent';
+      const amount = isTermination ? `-$${val}M` : val > 0 ? `$${val}M` : m.value;
+      const lpShort = m.lp.length > 12 ? m.lp.replace('State ', '').replace('Santa Barbara', 'SB').replace(' ERS', '') : m.lp;
+      return {
+        date: dateStr,
+        type: m.metric,
+        color,
+        headline: `${m.lp}: ${m.metric} — ${m.fund}`,
+        amount,
+        lp: lpShort,
+        isNew: d > sevenDaysAgo,
+      };
+    });
+  }, []);
 
   return (
     <div className="flex-1 p-6 overflow-auto relative">
@@ -200,79 +355,7 @@ export function DashboardPage() {
       />
 
       <div className="relative z-10">
-        {/* ---- 1. Intelligence Briefing / Tracker Banner ---- */}
-        {searchQuery && (
-          <motion.div
-            initial={{ opacity: 0, y: -12, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            transition={{ duration: 0.6, ease }}
-            className="tracker-card mb-6"
-          >
-            <div className="tracker-card-inner">
-              <div className="flex items-center gap-4">
-                {/* Status icon with pulse ring */}
-                <div className="relative shrink-0">
-                  <div className="w-10 h-10 rounded-xl bg-accent/12 border border-accent/25 flex items-center justify-center">
-                    <Bell className="w-5 h-5 text-accent-light" />
-                  </div>
-                  <motion.div
-                    className="absolute inset-0 rounded-xl border border-accent/30"
-                    animate={{ scale: [1, 1.35, 1.35], opacity: [0.6, 0, 0] }}
-                    transition={{ duration: 2.5, repeat: Infinity, ease: 'easeOut' }}
-                  />
-                </div>
-
-                {/* Query + status */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2.5 mb-1">
-                    <span className="text-[11px] font-semibold text-accent-light uppercase tracking-[0.1em]">Now tracking</span>
-                    <div className="h-3 w-px bg-border-light" />
-                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-green-light">
-                      <motion.div
-                        className="w-1.5 h-1.5 rounded-full bg-green"
-                        animate={{ opacity: [1, 0.3, 1] }}
-                        transition={{ duration: 2, repeat: Infinity }}
-                      />
-                      Active
-                    </span>
-                  </div>
-                  <p className="text-sm text-text-primary font-medium truncate">{searchQuery}</p>
-                </div>
-
-                {/* Stat pills */}
-                <div className="flex items-center gap-2 shrink-0">
-                  <div className="tracker-stat-pill">
-                    <FileText className="w-3.5 h-3.5 text-accent-light/70" />
-                    <span className="text-xs text-text-secondary font-medium">4 sources</span>
-                  </div>
-                  <div className="tracker-stat-pill">
-                    <Activity className="w-3.5 h-3.5 text-accent-light/70" />
-                    <span className="text-xs text-text-secondary font-medium">31 metrics</span>
-                  </div>
-                  <div className="tracker-stat-pill">
-                    <Zap className="w-3.5 h-3.5 text-accent-light/70" />
-                    <span className="text-xs text-text-secondary font-medium">4 signals</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Metadata strip */}
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.3, duration: 0.5 }}
-                className="flex items-center gap-5 mt-3 pt-3 border-t border-border/40 text-[11px] text-text-muted"
-              >
-                <span className="flex items-center gap-1.5"><Clock className="w-3 h-3" /> Apr 2025 &mdash; Jan 2026</span>
-                <span>High confidence &mdash; 28/31 metrics verified</span>
-                <span>5 asset classes detected</span>
-                <span>14 fund vehicles</span>
-              </motion.div>
-            </div>
-          </motion.div>
-        )}
-
-        {/* ---- 2. Hero Stats ---- */}
+        {/* ---- 1. Hero Stats ---- */}
         <div className="grid grid-cols-4 gap-4 mb-6">
           <HeroStat
             label="Capital Deployed"
@@ -303,6 +386,34 @@ export function DashboardPage() {
             delay={0.25}
           />
         </div>
+
+        {/* ---- 2. Active Trackers ---- */}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.28, duration: 0.5, ease }}
+          className="mb-6"
+        >
+          <div className="flex items-end justify-between mb-3">
+            <div>
+              <h2 className="text-sm font-semibold text-text-secondary flex items-center gap-2">
+                <span className="w-1 h-4 rounded-full" style={{ background: 'linear-gradient(180deg, #10b981 0%, #059669 100%)' }} />
+                Active Trackers
+              </h2>
+            </div>
+            <span className="text-[11px] text-text-muted">{allTrackers.filter(t => t.status === 'active').length} active</span>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {allTrackers.map((tracker, i) => (
+              <TrackerCard
+                key={tracker.id ?? tracker.name}
+                tracker={tracker}
+                index={i}
+                isHighlighted={i === 0 && !!searchQuery}
+              />
+            ))}
+          </div>
+        </motion.div>
 
         {/* ---- 3. Key Insight Callout ---- */}
         <motion.div

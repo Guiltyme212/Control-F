@@ -1,12 +1,13 @@
 import { motion } from 'framer-motion';
 import { Search, LayoutGrid, BarChart3, Bell, Upload } from 'lucide-react';
 import type { Page } from '../data/types';
+import { metrics, trackers } from '../data/metrics';
 
 const navItems: { id: Page; label: string; icon: React.ElementType; badge?: string }[] = [
   { id: 'search', label: 'Search', icon: Search },
-  { id: 'results', label: 'Results', icon: LayoutGrid, badge: '31' },
+  { id: 'results', label: 'Results', icon: LayoutGrid, badge: String(metrics.length) },
   { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
-  { id: 'trackers', label: 'Trackers', icon: Bell, badge: '3' },
+  { id: 'trackers', label: 'Trackers', icon: Bell, badge: String(trackers.filter(t => t.status === 'active').length) },
   { id: 'upload', label: 'Upload', icon: Upload },
 ];
 

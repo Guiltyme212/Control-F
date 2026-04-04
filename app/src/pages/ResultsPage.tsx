@@ -1,15 +1,15 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bell, Filter, Download, Bookmark, ChevronDown, ChevronUp, FileText, TrendingUp, AlertTriangle, Zap, DollarSign, BarChart3, ArrowUpDown, X } from 'lucide-react';
-import { metrics, signals } from '../data/metrics';
+import { Bell, Filter, Download, Bookmark, ChevronDown, ChevronUp, FileText, TrendingUp, TrendingDown, AlertTriangle, Zap, DollarSign, BarChart3, ArrowUpDown, X, Building2, Users, ArrowUpRight, Layers } from 'lucide-react';
+import { metrics, signals, getCommitmentTotal } from '../data/metrics';
 import { useCountUp } from '../hooks/useCountUp';
 import { useToast } from '../hooks/useToast';
 import { ToastContainer } from '../components/Toast';
 import { exportToCSV, exportToJSON } from '../utils/export';
 import type { Metric } from '../data/types';
 
-const metricTypes = ['All', 'Commitment', 'Termination', 'Performance', 'Fee Structure', 'AUM', 'NAV', 'Co-Investment', 'Target Fund Size'];
-const assetClasses = ['All', 'Infrastructure', 'Real Assets', 'Private Equity', 'Credit', 'Public Equities', 'Natural Resources', 'Total Fund'];
+const metricTypes = ['All', 'Commitment', 'Termination', 'Performance', 'Fee Structure', 'AUM', 'NAV', 'Co-Investment', 'Target Fund Size', 'Distribution'];
+const assetClasses = ['All', 'Infrastructure', 'Real Assets', 'Private Equity', 'Credit', 'Public Equities', 'Natural Resources', 'Total Fund', 'Real Estate'];
 
 const metricColors: Record<string, string> = {
   'Commitment': 'bg-green/20 text-green-light',
@@ -20,6 +20,7 @@ const metricColors: Record<string, string> = {
   'AUM': 'bg-purple/20 text-purple',
   'NAV': 'bg-purple/20 text-purple',
   'Target Fund Size': 'bg-orange/20 text-orange',
+  'Distribution': 'bg-orange/20 text-orange',
 };
 
 const signalIcons: Record<string, React.ElementType> = {
@@ -27,6 +28,16 @@ const signalIcons: Record<string, React.ElementType> = {
   'Large Termination': AlertTriangle,
   'New High': TrendingUp,
   'Infrastructure Secondaries': BarChart3,
+  'GP Fundraising Signal': TrendingUp,
+  'Performance Divergence': TrendingDown,
+  'Real Estate Rotation': Building2,
+  'Credit Allocation': DollarSign,
+  'Co-Investment Trend': Users,
+  'Fee Compression': TrendingDown,
+  'AUM Milestone': BarChart3,
+  'Natural Resources Momentum': Zap,
+  'Manager Concentration': Layers,
+  'Distribution Uptick': ArrowUpRight,
 };
 
 const signalColors: Record<string, string> = {
@@ -34,6 +45,16 @@ const signalColors: Record<string, string> = {
   'Large Termination': 'border-l-red',
   'New High': 'border-l-green',
   'Infrastructure Secondaries': 'border-l-cyan',
+  'GP Fundraising Signal': 'border-l-purple',
+  'Performance Divergence': 'border-l-yellow',
+  'Real Estate Rotation': 'border-l-orange',
+  'Credit Allocation': 'border-l-blue',
+  'Co-Investment Trend': 'border-l-cyan',
+  'Fee Compression': 'border-l-green',
+  'AUM Milestone': 'border-l-accent',
+  'Natural Resources Momentum': 'border-l-orange',
+  'Manager Concentration': 'border-l-purple',
+  'Distribution Uptick': 'border-l-green',
 };
 
 type SortField = 'date' | 'lp' | 'fund' | 'gp' | 'metric' | 'value' | 'asset_class';
@@ -84,15 +105,21 @@ export function ResultsPage() {
   const [showSavePopover, setShowSavePopover] = useState(false);
   const [saveTrackerName, setSaveTrackerName] = useState('Custom search');
   const [saveFrequency, setSaveFrequency] = useState('Weekly');
+  const [showAllSignals, setShowAllSignals] = useState(false);
   const { toasts, showToast, dismissToast } = useToast();
 
   const exportMenuRef = useRef<HTMLDivElement>(null);
   const savePopoverRef = useRef<HTMLDivElement>(null);
 
-  const metricsCount = useCountUp(31, 1200);
-  const commitmentsCount = useCountUp(12, 1200);
-  const signalsCount = useCountUp(4, 1000);
-  const fundsCount = useCountUp(4, 800);
+  const metricsCount = useCountUp(metrics.length, 1200);
+  const commitmentsCount = useCountUp(metrics.filter(m => m.metric === 'Commitment').length, 1200);
+  const signalsCount = useCountUp(signals.length, 1000);
+  const fundsCount = useCountUp(new Set(metrics.map(m => m.lp)).size, 800);
+
+  const commitmentTotalStr = useMemo(() => {
+    const total = getCommitmentTotal();
+    return total >= 1_000_000_000 ? `~$${(total / 1_000_000_000).toFixed(1)}B total` : `~$${(total / 1_000_000).toFixed(0)}M total`;
+  }, []);
 
   const filtered = useMemo(() => {
     let result = [...metrics];
@@ -212,8 +239,8 @@ export function ResultsPage() {
       {/* Summary Stats */}
       <div className="grid grid-cols-4 gap-4 mb-6">
         {[
-          { value: metricsCount, label: 'metrics extracted', sub: 'from 4 documents', icon: FileText },
-          { value: commitmentsCount, label: 'commitments found', sub: '~$1.8B total', icon: DollarSign },
+          { value: metricsCount, label: 'metrics extracted', sub: `from ${new Set(metrics.map(m => m.source)).size} documents`, icon: FileText },
+          { value: commitmentsCount, label: 'commitments found', sub: commitmentTotalStr, icon: DollarSign },
           { value: signalsCount, label: 'intelligence signals', sub: 'actionable insights', icon: Zap },
           { value: fundsCount, label: 'pension funds scanned', sub: 'US public funds', icon: BarChart3 },
         ].map((stat, i) => (
@@ -236,26 +263,41 @@ export function ResultsPage() {
 
       {/* Intelligence Signals */}
       <div className="mb-6">
-        <h3 className="text-sm font-semibold text-text-secondary uppercase tracking-wider mb-3">Intelligence Signals</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">Intelligence Signals</h3>
+          {signals.length > 4 && (
+            <button
+              onClick={() => setShowAllSignals(prev => !prev)}
+              className="text-xs text-accent-light hover:text-accent transition-colors cursor-pointer flex items-center gap-1"
+            >
+              {showAllSignals ? 'Show fewer' : `Show all ${signals.length} signals`}
+              {showAllSignals ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
+          )}
+        </div>
         <div className="grid grid-cols-2 gap-3">
-          {signals.map((signal, i) => {
-            const Icon = signalIcons[signal.type] || Zap;
-            return (
-              <motion.div
-                key={signal.type}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.3 + i * 0.1 }}
-                className={`bg-bg-card border border-border rounded-xl p-4 border-l-4 ${signalColors[signal.type] || 'border-l-accent'}`}
-              >
-                <div className="flex items-center gap-2 mb-1.5">
-                  <Icon className="w-4 h-4 text-text-secondary" />
-                  <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">{signal.type}</span>
-                </div>
-                <p className="text-sm text-text-primary leading-relaxed">{signal.description}</p>
-              </motion.div>
-            );
-          })}
+          <AnimatePresence mode="popLayout">
+            {(showAllSignals ? signals : signals.slice(0, 4)).map((signal, i) => {
+              const Icon = signalIcons[signal.type] || Zap;
+              return (
+                <motion.div
+                  key={signal.type}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                  transition={{ delay: 0.3 + i * 0.05 }}
+                  layout
+                  className={`bg-bg-card border border-border rounded-xl p-4 border-l-4 ${signalColors[signal.type] || 'border-l-accent'}`}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <Icon className="w-4 h-4 text-text-secondary" />
+                    <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">{signal.type}</span>
+                  </div>
+                  <p className="text-sm text-text-primary leading-relaxed">{signal.description}</p>
+                </motion.div>
+              );
+            })}
+          </AnimatePresence>
         </div>
       </div>
 

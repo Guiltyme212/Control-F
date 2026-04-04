@@ -1,6 +1,8 @@
+import { PDFDocument } from 'pdf-lib';
 import type { Metric, ExtractedData } from '../data/types';
 
 const FIRECRAWL_API_KEY = 'fc-36ddfed03f4645f3af6db877ab2d1574';
+const MAX_PDF_PAGES = 95; // Stay under Claude's 100-page limit
 
 export interface ScrapedPdfLink {
   url: string;
@@ -56,31 +58,80 @@ Rules:
 7. Co-investments: separate entries from main fund commitments
 8. Capture target fund size and target returns`;
 
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      // Remove the data URL prefix (data:application/pdf;base64,)
-      const base64 = result.split(',')[1];
-      resolve(base64);
-    };
-    reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
-  });
+/* ------------------------------------------------------------------ */
+/*  PDF helpers                                                        */
+/* ------------------------------------------------------------------ */
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }
 
-export interface ExtractionResult {
-  metrics: Metric[];
-  signals: { signal_type: string; description: string }[];
-  metadata: ExtractedData['document_metadata'];
+interface PdfChunk {
+  base64: string;
+  pageOffset: number;
+  totalPages: number;
 }
 
-export async function extractMetricsFromPDF(
-  file: File,
-  apiKey: string
+async function splitPdfIfNeeded(pdfBytes: Uint8Array): Promise<PdfChunk[] | null> {
+  try {
+    const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+    const totalPages = pdfDoc.getPageCount();
+
+    if (totalPages <= MAX_PDF_PAGES) {
+      return [{ base64: uint8ToBase64(pdfBytes), pageOffset: 0, totalPages }];
+    }
+
+    const chunks: PdfChunk[] = [];
+    for (let start = 0; start < totalPages; start += MAX_PDF_PAGES) {
+      const end = Math.min(start + MAX_PDF_PAGES, totalPages);
+      const chunkDoc = await PDFDocument.create();
+      const indices = Array.from({ length: end - start }, (_, i) => start + i);
+      const copiedPages = await chunkDoc.copyPages(pdfDoc, indices);
+      for (const page of copiedPages) chunkDoc.addPage(page);
+      const chunkBytes = await chunkDoc.save();
+      chunks.push({
+        base64: uint8ToBase64(new Uint8Array(chunkBytes)),
+        pageOffset: start,
+        totalPages,
+      });
+    }
+
+    return chunks;
+  } catch {
+    // pdf-lib can't handle this PDF (corrupt structure, unsupported features, etc.)
+    return null;
+  }
+}
+
+async function fetchChunkedPdf(pdfUrl: string): Promise<PdfChunk[]> {
+  const response = await fetch(`/proxy-pdf-chunks?url=${encodeURIComponent(pdfUrl)}`);
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`PDF processing failed: ${body || response.statusText}`);
+  }
+  const data: { chunks: PdfChunk[] } = await response.json();
+  return data.chunks;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Core extraction: sends a base64 PDF chunk to Claude                */
+/* ------------------------------------------------------------------ */
+
+async function extractChunk(
+  base64: string,
+  apiKey: string,
+  sourceName: string,
+  pageOffset: number,
+  totalPages: number,
 ): Promise<ExtractionResult> {
-  const base64String = await readFileAsBase64(file);
+  const isChunked = totalPages > MAX_PDF_PAGES;
+  const userText = isChunked
+    ? `Extract all financial metrics from this document. This is pages ${pageOffset + 1}–${Math.min(pageOffset + MAX_PDF_PAGES, totalPages)} of a ${totalPages}-page document. Report page_reference relative to the original document (add ${pageOffset} to any page number you see).`
+    : 'Extract all financial metrics from this document.';
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -103,13 +154,10 @@ export async function extractMetricsFromPDF(
               source: {
                 type: 'base64',
                 media_type: 'application/pdf',
-                data: base64String,
+                data: base64,
               },
             },
-            {
-              type: 'text',
-              text: 'Extract all financial metrics from this document.',
-            },
+            { type: 'text', text: userText },
           ],
         },
       ],
@@ -124,6 +172,9 @@ export async function extractMetricsFromPDF(
   }
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '');
+    if (errorBody.includes('100 PDF pages')) {
+      throw new Error('PDF too large (over 100 pages). This document has a complex structure that prevents automatic splitting.');
+    }
     throw new Error(`API error (${response.status}): ${errorBody || response.statusText}`);
   }
 
@@ -134,7 +185,6 @@ export async function extractMetricsFromPDF(
     throw new Error('API returned invalid JSON response.');
   }
 
-  // Extract the text content from the response
   const textBlock = data.content?.find(
     (block: { type: string }) => block.type === 'text'
   );
@@ -144,7 +194,6 @@ export async function extractMetricsFromPDF(
 
   let parsed: ExtractedData;
   try {
-    // Try to parse directly; also handle markdown-fenced JSON just in case
     let jsonStr = textBlock.text.trim();
     if (jsonStr.startsWith('```')) {
       jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
@@ -154,7 +203,6 @@ export async function extractMetricsFromPDF(
     throw new Error('Failed to parse extraction results. The API returned malformed JSON.');
   }
 
-  // Map API metrics to our Metric type
   const metrics: Metric[] = (parsed.extracted_metrics || []).map((am) => ({
     date: am.date || '',
     lp: am.lp_name || '',
@@ -163,7 +211,7 @@ export async function extractMetricsFromPDF(
     metric: am.metric_type || '',
     value: am.value || '',
     asset_class: am.asset_class || '',
-    source: file.name,
+    source: sourceName,
     page: am.page_reference ?? 0,
     evidence: am.evidence_text || '',
     confidence: am.confidence || 'medium',
@@ -179,6 +227,88 @@ export async function extractMetricsFromPDF(
       reporting_period: '',
     },
   };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Merge results from multiple chunks                                 */
+/* ------------------------------------------------------------------ */
+
+function mergeResults(results: ExtractionResult[]): ExtractionResult {
+  return {
+    metrics: results.flatMap((r) => r.metrics),
+    signals: results.flatMap((r) => r.signals),
+    metadata: results[0]?.metadata || {
+      source_organization: '',
+      document_type: '',
+      document_date: '',
+      reporting_period: '',
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Public API                                                         */
+/* ------------------------------------------------------------------ */
+
+export interface ExtractionResult {
+  metrics: Metric[];
+  signals: { signal_type: string; description: string }[];
+  metadata: ExtractedData['document_metadata'];
+}
+
+export async function extractMetricsFromPDF(
+  file: File,
+  apiKey: string
+): Promise<ExtractionResult> {
+  const buffer = await file.arrayBuffer();
+  const pdfBytes = new Uint8Array(buffer);
+  const chunks = await splitPdfIfNeeded(pdfBytes);
+
+  if (chunks) {
+    // pdf-lib parsed successfully — use chunked extraction
+    const results: ExtractionResult[] = [];
+    for (const chunk of chunks) {
+      const result = await extractChunk(
+        chunk.base64,
+        apiKey,
+        file.name,
+        chunk.pageOffset,
+        chunk.totalPages,
+      );
+      results.push(result);
+    }
+    return mergeResults(results);
+  }
+
+  // Fallback: pdf-lib couldn't parse — send raw base64 and hope it's under 100 pages
+  const base64 = uint8ToBase64(pdfBytes);
+  return extractChunk(base64, apiKey, file.name, 0, 0);
+}
+
+export async function extractMetricsFromPdfUrl(
+  pdfUrl: string,
+  apiKey: string
+): Promise<ExtractionResult> {
+  const pdfFilename = decodeURIComponent(
+    new URL(pdfUrl).pathname.split('/').pop() || 'scraped.pdf'
+  );
+
+  // Server-side download + split with qpdf (handles any PDF, any size)
+  const chunks = await fetchChunkedPdf(pdfUrl);
+
+  const results: ExtractionResult[] = [];
+  for (const chunk of chunks) {
+    const result = await extractChunk(
+      chunk.base64,
+      apiKey,
+      pdfFilename,
+      chunk.pageOffset,
+      chunk.totalPages,
+    );
+    results.push(result);
+  }
+
+  return mergeResults(results);
 }
 
 export async function scrapeUrlForPdfs(url: string): Promise<ScrapedPdfLink[]> {
@@ -237,103 +367,4 @@ export async function scrapeUrlForPdfs(url: string): Promise<ScrapedPdfLink[]> {
     seen.add(link.url);
     return true;
   });
-}
-
-export async function extractMetricsFromPdfUrl(
-  pdfUrl: string,
-  apiKey: string
-): Promise<ExtractionResult> {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 8000,
-      system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: { type: 'url', url: pdfUrl },
-            },
-            {
-              type: 'text',
-              text: 'Extract all financial metrics from this document.',
-            },
-          ],
-        },
-      ],
-    }),
-  });
-
-  if (response.status === 401) {
-    throw new Error('Invalid API key. Please check your Anthropic API key in settings.');
-  }
-  if (response.status === 429) {
-    throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-  }
-  if (!response.ok) {
-    const errorBody = await response.text().catch(() => '');
-    throw new Error(`API error (${response.status}): ${errorBody || response.statusText}`);
-  }
-
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error('API returned invalid JSON response.');
-  }
-  const textBlock = data.content?.find(
-    (block: { type: string }) => block.type === 'text'
-  );
-  if (!textBlock?.text) {
-    throw new Error('No text content in API response');
-  }
-
-  let parsed: ExtractedData;
-  try {
-    let jsonStr = textBlock.text.trim();
-    if (jsonStr.startsWith('```')) {
-      jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-    }
-    parsed = JSON.parse(jsonStr);
-  } catch {
-    throw new Error('Failed to parse extraction results.');
-  }
-
-  const pdfFilename = decodeURIComponent(
-    new URL(pdfUrl).pathname.split('/').pop() || 'scraped.pdf'
-  );
-
-  const metrics: Metric[] = (parsed.extracted_metrics || []).map((am) => ({
-    date: am.date || '',
-    lp: am.lp_name || '',
-    fund: am.fund_name || '',
-    gp: am.gp_manager || '',
-    metric: am.metric_type || '',
-    value: am.value || '',
-    asset_class: am.asset_class || '',
-    source: pdfFilename,
-    page: am.page_reference ?? 0,
-    evidence: am.evidence_text || '',
-    confidence: am.confidence || 'medium',
-  }));
-
-  return {
-    metrics,
-    signals: parsed.cross_reference_signals || [],
-    metadata: parsed.document_metadata || {
-      source_organization: '',
-      document_type: '',
-      document_date: '',
-      reporting_period: '',
-    },
-  };
 }

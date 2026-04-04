@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, FileText, CheckCircle, Search, Settings, X, AlertTriangle, Globe, Loader2, ExternalLink } from 'lucide-react';
+import { Upload, FileText, CheckCircle, Search, Settings, X, AlertTriangle, Globe, Loader2, ExternalLink, ChevronDown, ChevronUp } from 'lucide-react';
 import { extractMetricsFromPDF, scrapeUrlForPdfs, extractMetricsFromPdfUrl } from '../utils/api';
 import type { ScrapedPdfLink } from '../utils/api';
 import { useToast } from '../hooks/useToast';
@@ -27,6 +27,38 @@ const sampleResults: { metric: string; fund: string; value: string; confidence: 
   { metric: 'AUM', fund: 'DCRB Total Fund', value: '$14,100,000,000', confidence: 'high' },
 ];
 
+function highlightEvidence(evidence: string, value: string): React.ReactNode {
+  const candidates: string[] = [value];
+
+  const numMatch = value.match(/^[\$\u20AC]?([\d,.]+)/);
+  if (numMatch) {
+    const rawNum = numMatch[1].replace(/,/g, '');
+    const num = parseFloat(rawNum);
+    if (num >= 1_000_000_000) candidates.push(`$${num / 1_000_000_000} billion`);
+    if (num >= 1_000_000) candidates.push(`$${num / 1_000_000}M`, `$${num / 1_000_000} million`);
+    candidates.push(numMatch[0]);
+  }
+
+  const pctMatch = value.match(/([\d.]+%)/);
+  if (pctMatch) candidates.push(pctMatch[1]);
+
+  for (const candidate of candidates) {
+    const idx = evidence.toLowerCase().indexOf(candidate.toLowerCase());
+    if (idx !== -1) {
+      const before = evidence.slice(0, idx);
+      const match = evidence.slice(idx, idx + candidate.length);
+      const after = evidence.slice(idx + candidate.length);
+      return (
+        <>
+          {before}<span className="font-bold text-accent-light not-italic">{match}</span>{after}
+        </>
+      );
+    }
+  }
+
+  return evidence;
+}
+
 export function UploadPage() {
   // Upload tab state
   const [state, setState] = useState<UploadState>('idle');
@@ -41,6 +73,7 @@ export function UploadPage() {
   const [isLiveMode, setIsLiveMode] = useState(false);
   const { toasts, showToast, dismissToast } = useToast();
   const abortRef = useRef(false);
+  const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
   // Tab & scrape state
   const [activeTab, setActiveTab] = useState<Tab>('upload');
@@ -349,7 +382,7 @@ export function UploadPage() {
                             <th className="px-4 py-2.5 text-left text-xs font-semibold text-text-muted uppercase">Metric</th>
                             <th className="px-4 py-2.5 text-left text-xs font-semibold text-text-muted uppercase">Fund</th>
                             <th className="px-4 py-2.5 text-left text-xs font-semibold text-text-muted uppercase">Value</th>
-                            <th className="px-4 py-2.5 text-left text-xs font-semibold text-text-muted uppercase">Confidence</th>
+                            <th className="px-4 py-2.5 text-left text-xs font-semibold text-text-muted uppercase w-8"></th>
                           </>
                         ) : (
                           <>
@@ -363,14 +396,71 @@ export function UploadPage() {
                     </thead>
                     <tbody>
                       {displayResults ? displayResults.map((r, i) => (
-                        <motion.tr key={i} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i * 0.05, 1) }} className="border-b border-border/30">
-                          <td className="px-4 py-3 text-text-muted whitespace-nowrap">{r.date}</td>
-                          <td className="px-4 py-3 text-text-primary whitespace-nowrap">{r.lp}</td>
-                          <td className="px-4 py-3"><span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green/20 text-green-light">{r.metric}</span></td>
-                          <td className="px-4 py-3 text-text-primary max-w-48 truncate">{r.fund}</td>
-                          <td className="px-4 py-3 text-text-primary font-mono text-xs">{r.value}</td>
-                          <td className="px-4 py-3"><span className={`text-xs ${r.confidence === 'high' ? 'text-green' : r.confidence === 'medium' ? 'text-yellow' : 'text-red'}`}>{r.confidence}</span></td>
-                        </motion.tr>
+                        <React.Fragment key={i}>
+                          <motion.tr
+                            initial={{ opacity: 0, y: 5 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: Math.min(i * 0.05, 1) }}
+                            className={`border-b border-border/30 cursor-pointer hover:bg-bg-hover/50 transition-colors ${expandedRow === i ? 'bg-bg-hover/30' : ''}`}
+                            onClick={() => setExpandedRow(expandedRow === i ? null : i)}
+                          >
+                            <td className="px-4 py-3 text-text-muted whitespace-nowrap">{r.date}</td>
+                            <td className="px-4 py-3 text-text-primary whitespace-nowrap">{r.lp}</td>
+                            <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${r.metric === 'Commitment' ? 'bg-green/20 text-green-light' : r.metric === 'Termination' ? 'bg-red/20 text-red' : r.metric === 'Fee Structure' ? 'bg-yellow/20 text-yellow' : 'bg-accent/20 text-accent-light'}`}>{r.metric}</span></td>
+                            <td className="px-4 py-3 text-text-primary max-w-48 truncate">{r.fund}</td>
+                            <td className="px-4 py-3 text-text-primary font-mono text-xs">{r.value}</td>
+                            <td className="px-4 py-3 text-text-muted">
+                              {expandedRow === i ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                            </td>
+                          </motion.tr>
+                          <AnimatePresence>
+                            {expandedRow === i && (
+                              <motion.tr
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                transition={{ duration: 0.2 }}
+                              >
+                                <td colSpan={6} className="px-6 py-5 bg-bg-tertiary border-b border-border">
+                                  <div className="flex gap-8">
+                                    <div className="space-y-2 min-w-56">
+                                      <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Metadata</h4>
+                                      {[
+                                        ['LP', r.lp],
+                                        ['Fund', r.fund],
+                                        ['GP/Manager', r.gp],
+                                        ['Strategy', r.asset_class],
+                                        ['Page', r.page ? String(r.page) : '—'],
+                                        ['Confidence', r.confidence],
+                                      ].map(([label, val]) => (
+                                        <div key={label} className="flex text-sm">
+                                          <span className="text-text-muted w-24 shrink-0">{label}</span>
+                                          <span className={`text-text-primary ${label === 'Confidence' ? (val === 'high' ? 'text-green' : val === 'medium' ? 'text-yellow' : 'text-red') : ''}`}>{val || '—'}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <div className="flex-1">
+                                      <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Source Evidence</h4>
+                                      {r.evidence ? (
+                                        <blockquote className="border-l-2 border-accent/40 pl-4 py-2 bg-bg-card rounded-r-lg">
+                                          <p className="text-sm text-text-secondary leading-relaxed italic">
+                                            &ldquo;{highlightEvidence(r.evidence, r.value)}&rdquo;
+                                          </p>
+                                        </blockquote>
+                                      ) : (
+                                        <p className="text-sm text-text-muted italic">No evidence text available</p>
+                                      )}
+                                      <p className="text-xs text-text-muted mt-2 flex items-center gap-1.5">
+                                        <FileText className="w-3 h-3" />
+                                        {r.source}{r.page ? ` — Page ${r.page}` : ''}
+                                      </p>
+                                    </div>
+                                  </div>
+                                </td>
+                              </motion.tr>
+                            )}
+                          </AnimatePresence>
+                        </React.Fragment>
                       )) : displaySample?.map((r, i) => (
                         <motion.tr key={i} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }} className="border-b border-border/30">
                           <td className="px-4 py-3"><span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green/20 text-green-light">{r.metric}</span></td>
@@ -398,7 +488,7 @@ export function UploadPage() {
                   <Globe className="w-8 h-8 text-accent-light" />
                   <div>
                     <h3 className="text-text-primary font-medium">Scrape PDFs from URL</h3>
-                    <p className="text-sm text-text-muted">Paste a webpage URL to find and extract PDFs</p>
+                    <p className="text-sm text-text-muted">Paste a pension fund webpage to find and extract PDFs</p>
                   </div>
                 </div>
                 <div className="flex gap-2">
@@ -407,7 +497,7 @@ export function UploadPage() {
                     value={scrapeUrl}
                     onChange={(e) => setScrapeUrl(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') handleScan(); }}
-                    placeholder="https://www.example.com/meeting-minutes/"
+                    placeholder="https://www.isbinvestment.com/meeting-minutes/"
                     className="flex-1 bg-bg-primary border border-border rounded-lg px-3 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/50"
                   />
                   <button
@@ -417,6 +507,23 @@ export function UploadPage() {
                   >
                     Scan
                   </button>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <span className="text-xs text-text-muted">Try:</span>
+                  {[
+                    { label: 'ISBI Minutes', url: 'https://www.isbinvestment.com/meeting-minutes/' },
+                    { label: 'ISBI Investments', url: 'https://www.isbinvestment.com/investments/' },
+                    { label: 'SAMCERA Reports', url: 'https://www.samcera.gov/investments-financials/financial-reports' },
+                    { label: 'Minnesota SBI', url: 'https://msbi.us/annual-reports' },
+                  ].map(({ label, url }) => (
+                    <button
+                      key={url}
+                      onClick={() => setScrapeUrl(url)}
+                      className="px-2.5 py-1 rounded-md bg-bg-hover border border-border text-xs text-text-muted hover:text-accent-light hover:border-accent/30 transition-all cursor-pointer"
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
               </div>
               {!hasApiKey && (
@@ -545,20 +652,77 @@ export function UploadPage() {
                           <th className="px-4 py-2.5 text-left text-xs font-semibold text-text-muted uppercase">Fund</th>
                           <th className="px-4 py-2.5 text-left text-xs font-semibold text-text-muted uppercase">Value</th>
                           <th className="px-4 py-2.5 text-left text-xs font-semibold text-text-muted uppercase">Source</th>
-                          <th className="px-4 py-2.5 text-left text-xs font-semibold text-text-muted uppercase">Confidence</th>
+                          <th className="px-4 py-2.5 text-left text-xs font-semibold text-text-muted uppercase w-8"></th>
                         </tr>
                       </thead>
                       <tbody>
                         {scrapeMetrics.map((r, i) => (
-                          <motion.tr key={i} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i * 0.05, 1) }} className="border-b border-border/30">
-                            <td className="px-4 py-3 text-text-muted whitespace-nowrap">{r.date}</td>
-                            <td className="px-4 py-3 text-text-primary whitespace-nowrap">{r.lp}</td>
-                            <td className="px-4 py-3"><span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green/20 text-green-light">{r.metric}</span></td>
-                            <td className="px-4 py-3 text-text-primary max-w-48 truncate">{r.fund}</td>
-                            <td className="px-4 py-3 text-text-primary font-mono text-xs">{r.value}</td>
-                            <td className="px-4 py-3 text-text-muted text-xs max-w-32 truncate" title={r.source}>{r.source}</td>
-                            <td className="px-4 py-3"><span className={`text-xs ${r.confidence === 'high' ? 'text-green' : r.confidence === 'medium' ? 'text-yellow' : 'text-red'}`}>{r.confidence}</span></td>
-                          </motion.tr>
+                          <React.Fragment key={i}>
+                            <motion.tr
+                              initial={{ opacity: 0, y: 5 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: Math.min(i * 0.05, 1) }}
+                              className={`border-b border-border/30 cursor-pointer hover:bg-bg-hover/50 transition-colors ${expandedRow === i ? 'bg-bg-hover/30' : ''}`}
+                              onClick={() => setExpandedRow(expandedRow === i ? null : i)}
+                            >
+                              <td className="px-4 py-3 text-text-muted whitespace-nowrap">{r.date}</td>
+                              <td className="px-4 py-3 text-text-primary whitespace-nowrap">{r.lp}</td>
+                              <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${r.metric === 'Commitment' ? 'bg-green/20 text-green-light' : r.metric === 'Termination' ? 'bg-red/20 text-red' : r.metric === 'Fee Structure' ? 'bg-yellow/20 text-yellow' : 'bg-accent/20 text-accent-light'}`}>{r.metric}</span></td>
+                              <td className="px-4 py-3 text-text-primary max-w-48 truncate">{r.fund}</td>
+                              <td className="px-4 py-3 text-text-primary font-mono text-xs">{r.value}</td>
+                              <td className="px-4 py-3 text-text-muted text-xs max-w-32 truncate" title={r.source}>{r.source}</td>
+                              <td className="px-4 py-3 text-text-muted">
+                                {expandedRow === i ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                              </td>
+                            </motion.tr>
+                            <AnimatePresence>
+                              {expandedRow === i && (
+                                <motion.tr
+                                  initial={{ opacity: 0, height: 0 }}
+                                  animate={{ opacity: 1, height: 'auto' }}
+                                  exit={{ opacity: 0, height: 0 }}
+                                  transition={{ duration: 0.2 }}
+                                >
+                                  <td colSpan={7} className="px-6 py-5 bg-bg-tertiary border-b border-border">
+                                    <div className="flex gap-8">
+                                      <div className="space-y-2 min-w-56">
+                                        <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Metadata</h4>
+                                        {[
+                                          ['LP', r.lp],
+                                          ['Fund', r.fund],
+                                          ['GP/Manager', r.gp],
+                                          ['Strategy', r.asset_class],
+                                          ['Page', r.page ? String(r.page) : '—'],
+                                          ['Confidence', r.confidence],
+                                        ].map(([label, val]) => (
+                                          <div key={label} className="flex text-sm">
+                                            <span className="text-text-muted w-24 shrink-0">{label}</span>
+                                            <span className={`text-text-primary ${label === 'Confidence' ? (val === 'high' ? 'text-green' : val === 'medium' ? 'text-yellow' : 'text-red') : ''}`}>{val || '—'}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                      <div className="flex-1">
+                                        <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Source Evidence</h4>
+                                        {r.evidence ? (
+                                          <blockquote className="border-l-2 border-accent/40 pl-4 py-2 bg-bg-card rounded-r-lg">
+                                            <p className="text-sm text-text-secondary leading-relaxed italic">
+                                              &ldquo;{highlightEvidence(r.evidence, r.value)}&rdquo;
+                                            </p>
+                                          </blockquote>
+                                        ) : (
+                                          <p className="text-sm text-text-muted italic">No evidence text available</p>
+                                        )}
+                                        <p className="text-xs text-text-muted mt-2 flex items-center gap-1.5">
+                                          <FileText className="w-3 h-3" />
+                                          {r.source}{r.page ? ` — Page ${r.page}` : ''}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </motion.tr>
+                              )}
+                            </AnimatePresence>
+                          </React.Fragment>
                         ))}
                       </tbody>
                     </table>

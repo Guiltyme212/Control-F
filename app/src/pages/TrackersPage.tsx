@@ -1,21 +1,27 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bell, MoreVertical, Clock, Database, Activity, Pause, Play, Pencil, Trash2, Plus, Check, X } from 'lucide-react';
+import { Bell, MoreVertical, Clock, Database, Activity, Pause, Play, Pencil, Trash2, Plus, Check, X, Search, Loader2, FileText, Eye } from 'lucide-react';
 import { trackers as defaultTrackers } from '../data/metrics';
 import { useToast } from '../hooks/useToast';
 import { ToastContainer } from '../components/Toast';
-import type { Tracker } from '../data/types';
+import type { Tracker, Page } from '../data/types';
+
+type ScanPhase = 'idle' | 'notification' | 'crawling' | 'extracting' | 'complete';
 
 interface TrackerWithId extends Tracker {
   id: string;
   _editing?: boolean;
 }
 
+interface TrackersPageProps {
+  onNavigate: (page: Page) => void;
+}
+
 function generateId(): string {
   return `tracker-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function TrackersPage() {
+export function TrackersPage({ onNavigate }: TrackersPageProps) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [trackerList, setTrackerList] = useState<TrackerWithId[]>([]);
   const [editState, setEditState] = useState<Record<string, { name: string; frequency: string }>>({});
@@ -44,6 +50,41 @@ export function TrackersPage() {
     } else {
       setTrackerList(base);
     }
+  }, []);
+
+  // Scan demo state
+  const [scanPhase, setScanPhase] = useState<ScanPhase>('notification');
+  const [scanProgress, setScanProgress] = useState('');
+  const [foundPdfs, setFoundPdfs] = useState<string[]>([]);
+
+  const handleScanNow = useCallback(() => {
+    setScanPhase('crawling');
+    setScanProgress('Crawling isbinvestment.com for documents...');
+
+    setTimeout(() => {
+      setFoundPdfs(['ISBI_Board_Q1_2026.pdf', 'ISBI_IPC_Mar_2026.pdf', 'ISBI_Performance_Q4_2025.pdf']);
+      setScanProgress('Found 3 PDF documents');
+    }, 1500);
+
+    setTimeout(() => {
+      setScanPhase('extracting');
+      setScanProgress('Extracting metrics from ISBI_Board_Q1_2026.pdf...');
+    }, 2500);
+
+    setTimeout(() => {
+      setScanPhase('complete');
+      setScanProgress('8 new metrics extracted from 3 documents');
+      setTrackerList(prev => prev.map((t, i) =>
+        i === 0 && t.status === 'active'
+          ? { ...t, last_match: 'Just now', metrics: t.metrics + 8 }
+          : t
+      ));
+      showToast('8 new metrics extracted from ISBI', 'success');
+    }, 4500);
+  }, [showToast]);
+
+  const handleDismissNotification = useCallback(() => {
+    setScanPhase('idle');
   }, []);
 
   const handleClickOutside = useCallback((e: MouseEvent) => {
@@ -180,6 +221,138 @@ export function TrackersPage() {
           New Tracker
         </button>
       </div>
+
+      {/* Scan notification / progress panel */}
+      <AnimatePresence mode="wait">
+        {scanPhase === 'notification' && (
+          <motion.div
+            key="notification"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.2 }}
+            className="bg-gradient-to-r from-accent/10 to-transparent border border-accent/20 rounded-xl p-4 mb-4 flex items-center gap-4"
+          >
+            <motion.div
+              animate={{ scale: [1, 1.15, 1] }}
+              transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+            >
+              <Bell className="w-5 h-5 text-accent-light" />
+            </motion.div>
+            <p className="flex-1 text-sm text-text-primary">
+              <span className="font-semibold text-accent-light">3 new documents</span>{' '}
+              detected from ISBI since last scan
+            </p>
+            <button
+              onClick={handleScanNow}
+              className="px-4 py-1.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-light transition-colors cursor-pointer flex items-center gap-2"
+            >
+              <Search className="w-3.5 h-3.5" />
+              Scan Now
+            </button>
+            <button
+              onClick={handleDismissNotification}
+              className="p-1.5 rounded-lg hover:bg-bg-hover text-text-muted hover:text-text-secondary transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </motion.div>
+        )}
+
+        {scanPhase === 'crawling' && (
+          <motion.div
+            key="crawling"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.2 }}
+            className="bg-bg-card border border-accent/20 rounded-xl p-5 mb-4"
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+              >
+                <Loader2 className="w-5 h-5 text-accent-light" />
+              </motion.div>
+              <p className="text-sm text-text-primary">{scanProgress}</p>
+            </div>
+            {foundPdfs.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                transition={{ duration: 0.3 }}
+                className="ml-8 space-y-1.5"
+              >
+                {foundPdfs.map((pdf) => (
+                  <div key={pdf} className="flex items-center gap-2 text-sm text-text-secondary">
+                    <FileText className="w-3.5 h-3.5 text-text-muted" />
+                    <span>{pdf}</span>
+                  </div>
+                ))}
+              </motion.div>
+            )}
+          </motion.div>
+        )}
+
+        {scanPhase === 'extracting' && (
+          <motion.div
+            key="extracting"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.2 }}
+            className="bg-bg-card border border-accent/20 rounded-xl p-5 mb-4"
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+              >
+                <Loader2 className="w-5 h-5 text-accent-light" />
+              </motion.div>
+              <p className="text-sm text-text-primary">{scanProgress}</p>
+            </div>
+            <div className="ml-8">
+              <div className="progress-bar-track">
+                <motion.div
+                  className="progress-bar-fill"
+                  initial={{ width: '0%' }}
+                  animate={{ width: '100%' }}
+                  transition={{ duration: 2, ease: 'easeInOut' }}
+                />
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {scanPhase === 'complete' && (
+          <motion.div
+            key="complete"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.2 }}
+            className="bg-bg-card border border-green/20 rounded-xl p-5 mb-4"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-green/15 flex items-center justify-center">
+                <Check className="w-4.5 h-4.5 text-green" />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-text-primary">{scanProgress}</p>
+              </div>
+              <button
+                onClick={() => onNavigate('results')}
+                className="px-4 py-1.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-light transition-colors cursor-pointer flex items-center gap-2"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                View Results
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="grid grid-cols-1 gap-3">
         <AnimatePresence>

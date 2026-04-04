@@ -1,7 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
-import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
-import { Search, Zap, FileText, Check, Sparkles } from 'lucide-react';
-import { useCountUp } from '../hooks/useCountUp';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Search, Zap, Sparkles, Bell, Activity, X, Plus, ChevronRight } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 
 const presets = [
@@ -11,578 +10,773 @@ const presets = [
   "New funds registered in the SEC",
 ];
 
-const TOTAL_DURATION = 7000;
-const MESSAGE_INTERVAL = 2200;
-
 const processingMessages = [
   "Understanding your query...",
-  "Scanning NY State Common Retirement Fund...",
-  "Analyzing NJ Division of Investment filings...",
-  "Reading DC Retirement Board minutes...",
-  "Cross-referencing fund commitments...",
+  "Scanning pension fund documents...",
+  "Analyzing board meeting minutes...",
+  "Cross-referencing fund data...",
   "Building intelligence signals...",
 ];
+
+const PHASE_TIMINGS = {
+  lifting: 600,
+  thinking: 4600,
+  morphing: 1400,
+  departure: 100,
+};
+
+const MESSAGE_INTERVAL = 1100;
+
+type Phase = 'idle' | 'refine' | 'lifting' | 'thinking' | 'morphing';
+
+/* ------------------------------------------------------------------ */
+/*  Refine constants                                                   */
+/* ------------------------------------------------------------------ */
+
+const ALL_ENTITIES = ['NY State CRF', 'CalPERS', 'CalSTRS', 'SBCERA', 'NJ DOI', 'Minnesota SBI', 'NM PERA', 'PSERS', 'SEC EDGAR'];
+const ALL_METRICS = ['Commitments', 'NAV', 'IRR', 'TVPI', 'DPI', 'Terminations', 'Manager Changes', 'AUM', 'Fund Registrations'];
+const ALL_ASSET_CLASSES = ['Infrastructure', 'Private Equity', 'Credit', 'Real Assets', 'Natural Resources', 'Real Estate', 'Public Equities'];
+const FREQUENCIES = ['Daily', 'Weekly', 'Monthly'] as const;
+type Frequency = (typeof FREQUENCIES)[number];
+
+const PRESET_CONFIGS: Record<string, { entities: string[]; metrics: string[]; assetClasses: string[] }> = {
+  "New LP commitments to infrastructure funds": {
+    entities: ['NY State CRF', 'CalPERS', 'CalSTRS', 'SBCERA'],
+    metrics: ['Commitments', 'NAV'],
+    assetClasses: ['Infrastructure'],
+  },
+  "Manager terminations and replacements": {
+    entities: ['NY State CRF', 'CalPERS', 'NJ DOI', 'CalSTRS'],
+    metrics: ['Terminations', 'Manager Changes'],
+    assetClasses: ['Public Equities', 'Private Equity'],
+  },
+  "Private equity fund performance (IRR/TVPI/DPI)": {
+    entities: ['CalPERS', 'CalSTRS', 'NY State CRF'],
+    metrics: ['IRR', 'TVPI', 'DPI'],
+    assetClasses: ['Private Equity'],
+  },
+  "New funds registered in the SEC": {
+    entities: ['SEC EDGAR', 'NY State CRF', 'CalPERS'],
+    metrics: ['Fund Registrations', 'AUM'],
+    assetClasses: ['Private Equity', 'Infrastructure', 'Credit'],
+  },
+};
+
+const DEFAULT_CONFIG = {
+  entities: ['NY State CRF', 'CalPERS', 'CalSTRS', 'SBCERA'],
+  metrics: ['Commitments', 'NAV'],
+  assetClasses: ['Infrastructure', 'Private Equity'],
+};
+
+/* ------------------------------------------------------------------ */
+/*  Chip Section                                                       */
+/* ------------------------------------------------------------------ */
+
+interface ChipSectionProps {
+  label: string;
+  items: string[];
+  allItems: string[];
+  onAdd: (item: string) => void;
+  onRemove: (item: string) => void;
+}
+
+function ChipSection({ label, items, allItems, onAdd, onRemove }: ChipSectionProps) {
+  const [editing, setEditing] = useState(false);
+  const addable = allItems.filter((i) => !items.includes(i));
+
+  return (
+    <div className="mb-5">
+      <div className="flex items-center justify-between mb-2.5">
+        <span className="text-xs font-semibold text-text-muted uppercase tracking-wider">{label}</span>
+        {addable.length > 0 && (
+          <button
+            onClick={() => setEditing(!editing)}
+            className="text-xs text-accent-light hover:text-accent transition-colors cursor-pointer"
+          >
+            {editing ? 'Done' : 'Edit'}
+          </button>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <AnimatePresence>
+          {items.map((item) => (
+            <motion.span
+              key={item}
+              layout
+              initial={{ opacity: 0, scale: 0.85 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.85 }}
+              transition={{ duration: 0.2 }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent/15 text-accent-light text-sm border border-accent/20"
+            >
+              {item}
+              <button onClick={() => onRemove(item)} className="hover:text-white transition-colors cursor-pointer">
+                <X className="w-3 h-3" />
+              </button>
+            </motion.span>
+          ))}
+          {editing &&
+            addable.map((item) => (
+              <motion.button
+                key={`add-${item}`}
+                initial={{ opacity: 0, scale: 0.85 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.85 }}
+                transition={{ duration: 0.2 }}
+                onClick={() => onAdd(item)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-bg-hover text-text-muted text-sm border border-border hover:border-accent/30 hover:text-text-primary transition-all cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                {item}
+              </motion.button>
+            ))}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
 
 interface SearchPageProps {
   onSearchComplete: () => void;
 }
 
 /* ------------------------------------------------------------------ */
-/*  Concentric ring — fades/scales in, then rotates slowly            */
+/*  Orbital progress ring with glowing leading dot                     */
 /* ------------------------------------------------------------------ */
-function ConcentricRing({ radius, duration, reverse, opacity, strokeWidth = 1.5, enterDelay = 0 }: {
-  radius: number;
-  duration: number;
-  reverse?: boolean;
-  opacity: number;
-  strokeWidth?: number;
-  enterDelay?: number;
-}) {
-  return (
-    <motion.div
-      className="absolute rounded-full border border-accent"
-      style={{
-        width: radius * 2,
-        height: radius * 2,
-        top: '50%',
-        left: '50%',
-        marginTop: -radius,
-        marginLeft: -radius,
-        borderWidth: strokeWidth,
-      }}
-      initial={{ opacity: 0, scale: 0.6 }}
-      animate={{ opacity, scale: 1, rotate: reverse ? -360 : 360 }}
-      transition={{
-        opacity: { delay: enterDelay, duration: 0.9, ease: 'easeOut' },
-        scale: { delay: enterDelay, duration: 1.0, ease: [0.22, 1, 0.36, 1] },
-        rotate: { delay: enterDelay + 0.4, duration, repeat: Infinity, ease: 'linear' },
-      }}
-    />
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Floating document — appears one at a time, scans, then checks     */
-/* ------------------------------------------------------------------ */
-function FloatingDoc({ index, total }: { index: number; total: number }) {
-  const angle = (index / total) * 2 * Math.PI - Math.PI / 2;
-  const orbitRadius = 95;
-  const x = Math.cos(angle) * orbitRadius;
-  const y = Math.sin(angle) * orbitRadius;
-
-  // Stagger docs across the timeline: first at ~1.5s, then every ~1s
-  const enterDelay = 1.5 + index * 1.0;
-  const scanDelay = enterDelay + 0.6;
-  const checkDelay = scanDelay + 0.9;
+function OrbitalRing({ progress }: { progress: number }) {
+  const radius = 85;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference * (1 - progress);
+  const angle = progress * 2 * Math.PI - Math.PI / 2;
+  const dotX = 100 + Math.cos(angle) * radius;
+  const dotY = 100 + Math.sin(angle) * radius;
 
   return (
-    <motion.div
-      className="absolute"
-      style={{ top: '50%', left: '50%' }}
-      initial={{ opacity: 0, scale: 0.4, x: x * 0.3, y: y * 0.3 }}
-      animate={{ opacity: 1, scale: 1, x, y }}
-      transition={{
-        delay: enterDelay,
-        duration: 0.8,
-        ease: [0.22, 1, 0.36, 1],
-      }}
-    >
-      <div className="relative w-9 h-11 bg-bg-card border border-border rounded-md flex items-center justify-center overflow-hidden">
-        <FileText className="w-4 h-4 text-accent-light/70" />
+    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+      <motion.svg
+        width="200"
+        height="200"
+        viewBox="0 0 200 200"
+        className="absolute"
+        initial={{ opacity: 0, scale: 0.8 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <defs>
+          <linearGradient id="ring-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#818cf8" stopOpacity="0.9" />
+            <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.4" />
+          </linearGradient>
+          <radialGradient id="dot-glow">
+            <stop offset="0%" stopColor="#a5b4fc" />
+            <stop offset="50%" stopColor="#6366f1" stopOpacity="0.6" />
+            <stop offset="100%" stopColor="#6366f1" stopOpacity="0" />
+          </radialGradient>
+          <filter id="ring-blur">
+            <feGaussianBlur stdDeviation="2" />
+          </filter>
+        </defs>
 
-        {/* Scan line sweep — slower, more deliberate */}
-        <motion.div
-          className="absolute inset-x-0"
-          style={{
-            background: 'linear-gradient(180deg, transparent 0%, rgba(99,102,241,0.18) 45%, rgba(129,140,248,0.3) 50%, rgba(99,102,241,0.18) 55%, transparent 100%)',
-            height: '50%',
-          }}
-          initial={{ y: '-120%', opacity: 0 }}
-          animate={{ y: '280%', opacity: [0, 0.8, 1, 0.8, 0] }}
-          transition={{ delay: scanDelay, duration: 1.1, ease: [0.4, 0, 0.2, 1] }}
+        {/* Background track */}
+        <circle
+          cx="100" cy="100" r={radius}
+          fill="none" stroke="rgba(99,102,241,0.07)" strokeWidth="1.5"
         />
 
-        {/* Checkmark — fades in gracefully */}
-        <motion.div
-          className="absolute inset-0 flex items-center justify-center bg-bg-card/85"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: checkDelay, duration: 0.5, ease: 'easeOut' }}
-        >
+        {/* Blurred glow layer behind progress arc */}
+        <circle
+          cx="100" cy="100" r={radius}
+          fill="none" stroke="rgba(99,102,241,0.25)" strokeWidth="4"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+          style={{ transform: 'rotate(-90deg)', transformOrigin: '100px 100px' }}
+          filter="url(#ring-blur)"
+        />
+
+        {/* Crisp progress arc */}
+        <circle
+          cx="100" cy="100" r={radius}
+          fill="none" stroke="url(#ring-grad)" strokeWidth="2"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+          style={{ transform: 'rotate(-90deg)', transformOrigin: '100px 100px' }}
+        />
+
+        {/* Leading dot with glow */}
+        {progress > 0.01 && (
+          <>
+            <circle cx={dotX} cy={dotY} r="8" fill="url(#dot-glow)" />
+            <circle cx={dotX} cy={dotY} r="2.5" fill="#c7d2fe" />
+          </>
+        )}
+      </motion.svg>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Ambient particles that drift outward from center                   */
+/* ------------------------------------------------------------------ */
+function AmbientParticles() {
+  const particles = useMemo(() =>
+    Array.from({ length: 6 }, (_, i) => ({
+      angle: (i / 6) * 360 + Math.random() * 30,
+      delay: i * 0.7,
+      duration: 3 + Math.random() * 2,
+      distance: 60 + Math.random() * 40,
+      size: 1.5 + Math.random() * 1.5,
+    })), []);
+
+  return (
+    <>
+      {particles.map((p, i) => {
+        const rad = (p.angle * Math.PI) / 180;
+        return (
           <motion.div
-            initial={{ scale: 0, rotate: -45 }}
-            animate={{ scale: 1, rotate: 0 }}
-            transition={{
-              delay: checkDelay,
-              duration: 0.5,
-              ease: [0.22, 1, 0.36, 1],
+            key={i}
+            className="absolute rounded-full bg-accent-light/60"
+            style={{
+              width: p.size,
+              height: p.size,
+              top: '50%',
+              left: '50%',
             }}
-          >
-            <Check className="w-4 h-4 text-green" />
-          </motion.div>
-        </motion.div>
-      </div>
-    </motion.div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Orbiting particle — slow, ambient                                 */
-/* ------------------------------------------------------------------ */
-function OrbitParticle({ index, total }: { index: number; total: number }) {
-  const baseAngle = (index / total) * 360;
-  const radius = 55 + (index % 3) * 14;
-  const duration = 6 + (index % 3) * 1.5;
-  const size = 1.5 + (index % 3) * 0.8;
-
-  return (
-    <motion.div
-      className="absolute rounded-full bg-accent-light"
-      style={{
-        width: size,
-        height: size,
-        top: '50%',
-        left: '50%',
-        transformOrigin: '0 0',
-      }}
-      initial={{ opacity: 0 }}
-      animate={{
-        x: [
-          Math.cos((baseAngle * Math.PI) / 180) * radius,
-          Math.cos(((baseAngle + 120) * Math.PI) / 180) * radius,
-          Math.cos(((baseAngle + 240) * Math.PI) / 180) * radius,
-          Math.cos(((baseAngle + 360) * Math.PI) / 180) * radius,
-        ],
-        y: [
-          Math.sin((baseAngle * Math.PI) / 180) * radius,
-          Math.sin(((baseAngle + 120) * Math.PI) / 180) * radius,
-          Math.sin(((baseAngle + 240) * Math.PI) / 180) * radius,
-          Math.sin(((baseAngle + 360) * Math.PI) / 180) * radius,
-        ],
-        opacity: [0, 0.5, 0.3, 0],
-      }}
-      transition={{
-        duration,
-        repeat: Infinity,
-        ease: 'linear',
-        delay: 1.0 + index * 0.25,
-      }}
-    />
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Central pulsing node — breathes slowly                            */
-/* ------------------------------------------------------------------ */
-function CentralNode() {
-  const nodes = [
-    { x: 0, y: 0, size: 6 },
-    { x: -12, y: -10, size: 3 },
-    { x: 14, y: -8, size: 3 },
-    { x: -8, y: 12, size: 3 },
-    { x: 10, y: 11, size: 3 },
-    { x: -16, y: 2, size: 2 },
-    { x: 16, y: 3, size: 2 },
-  ];
-
-  const connections = [
-    [0, 1], [0, 2], [0, 3], [0, 4], [0, 5], [0, 6],
-    [1, 5], [2, 6], [3, 5], [4, 6], [1, 2], [3, 4],
-  ];
-
-  return (
-    <motion.div
-      className="relative w-10 h-10"
-      animate={{ scale: [1, 1.05, 1] }}
-      transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
-    >
-      <svg viewBox="-22 -22 44 44" className="w-full h-full">
-        {connections.map(([a, b], i) => (
-          <motion.line
-            key={`line-${i}`}
-            x1={nodes[a].x}
-            y1={nodes[a].y}
-            x2={nodes[b].x}
-            y2={nodes[b].y}
-            stroke="rgba(129,140,248,0.3)"
-            strokeWidth={0.8}
-            animate={{ opacity: [0.15, 0.5, 0.15] }}
-            transition={{ duration: 2.5, repeat: Infinity, delay: i * 0.18 }}
+            initial={{ x: 0, y: 0, opacity: 0 }}
+            animate={{
+              x: [0, Math.cos(rad) * p.distance * 0.5, Math.cos(rad) * p.distance],
+              y: [0, Math.sin(rad) * p.distance * 0.5, Math.sin(rad) * p.distance],
+              opacity: [0, 0.6, 0],
+            }}
+            transition={{
+              duration: p.duration,
+              delay: p.delay,
+              repeat: Infinity,
+              ease: 'easeOut',
+            }}
           />
-        ))}
-        {nodes.map((node, i) => (
-          <motion.circle
-            key={`node-${i}`}
-            cx={node.x}
-            cy={node.y}
-            r={node.size / 2}
-            fill={i === 0 ? '#818cf8' : 'rgba(129,140,248,0.6)'}
-            animate={{ r: [node.size / 2, node.size / 2 + 0.6, node.size / 2] }}
-            transition={{ duration: 2, repeat: Infinity, delay: i * 0.3 }}
-          />
-        ))}
-      </svg>
-    </motion.div>
+        );
+      })}
+    </>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  Main SearchPage                                                   */
+/*  Main SearchPage                                                    */
 /* ------------------------------------------------------------------ */
 export function SearchPage({ onSearchComplete }: SearchPageProps) {
   const [query, setQuery] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [phase, setPhase] = useState<Phase>('idle');
   const [messageIndex, setMessageIndex] = useState(0);
-  const [processingProgress, setProcessingProgress] = useState(0);
+  const [progress, setProgress] = useState(0);
   const { setSearchQuery } = useAppContext();
 
-  const docsScanned = useCountUp(4, 5500, isProcessing, { overshoot: true });
-  const metricsFound = useCountUp(31, 6000, isProcessing, { overshoot: true });
+  // Refine state
+  const [refineEntities, setRefineEntities] = useState<string[]>(DEFAULT_CONFIG.entities);
+  const [refineMetrics, setRefineMetrics] = useState<string[]>(DEFAULT_CONFIG.metrics);
+  const [refineAssetClasses, setRefineAssetClasses] = useState<string[]>(DEFAULT_CONFIG.assetClasses);
+  const [refineFrequency, setRefineFrequency] = useState<Frequency>('Weekly');
 
-  const handleSearch = (searchQuery?: string) => {
+  const handleSearch = useCallback((searchQuery?: string) => {
     const q = searchQuery || query;
     if (searchQuery) setQuery(q);
-    setSearchQuery(q);
-    setIsProcessing(true);
-  };
+    // Pre-populate refine options based on query
+    const config = PRESET_CONFIGS[q] || DEFAULT_CONFIG;
+    setRefineEntities(config.entities);
+    setRefineMetrics(config.metrics);
+    setRefineAssetClasses(config.assetClasses);
+    setRefineFrequency('Weekly');
+    setPhase('refine');
+  }, [query]);
 
-  // Processing timers — slower message cycling
+  const handleStartTracking = useCallback(() => {
+    setSearchQuery(query);
+    setPhase('lifting');
+  }, [query, setSearchQuery]);
+
+  const handleBackToIdle = useCallback(() => {
+    setPhase('idle');
+  }, []);
+
+  // Phase transitions
   useEffect(() => {
-    if (!isProcessing) return;
+    if (phase === 'idle' || phase === 'refine') return;
+    let timer: ReturnType<typeof setTimeout>;
 
-    const messageTimer = setInterval(() => {
-      setMessageIndex((prev) => {
-        if (prev >= processingMessages.length - 1) return prev;
-        return prev + 1;
-      });
+    if (phase === 'lifting') {
+      timer = setTimeout(() => setPhase('thinking'), PHASE_TIMINGS.lifting);
+    } else if (phase === 'thinking') {
+      timer = setTimeout(() => setPhase('morphing'), PHASE_TIMINGS.thinking);
+    } else if (phase === 'morphing') {
+      timer = setTimeout(onSearchComplete, PHASE_TIMINGS.morphing + PHASE_TIMINGS.departure);
+    }
+
+    return () => clearTimeout(timer);
+  }, [phase, onSearchComplete]);
+
+  // Message cycling during thinking
+  useEffect(() => {
+    if (phase !== 'thinking') return;
+    const timer = setInterval(() => {
+      setMessageIndex(prev =>
+        prev >= processingMessages.length - 1 ? prev : prev + 1
+      );
     }, MESSAGE_INTERVAL);
+    return () => clearInterval(timer);
+  }, [phase]);
 
-    const completeTimer = setTimeout(() => {
-      onSearchComplete();
-    }, TOTAL_DURATION);
-
-    return () => {
-      clearInterval(messageTimer);
-      clearTimeout(completeTimer);
-    };
-  }, [isProcessing, onSearchComplete]);
-
-  // Progress bar — three-phase easing for a deliberate feel
+  // Smooth progress curve across thinking + morphing
   useEffect(() => {
-    if (!isProcessing) return;
+    if (phase !== 'thinking' && phase !== 'morphing') return;
 
     const startTime = performance.now();
+    const total = PHASE_TIMINGS.thinking + PHASE_TIMINGS.morphing;
     let frame: number;
 
     const tick = (now: number) => {
       const elapsed = now - startTime;
-      const t = Math.min(elapsed / TOTAL_DURATION, 1);
+      const t = Math.min(elapsed / total, 1);
 
-      // Three-phase curve:
-      //   0–30%:  fast initial burst (user feels immediate response)
-      //   30–85%: slow steady crawl (builds anticipation, shows work)
-      //   85–100%: quick finish (satisfying completion)
+      // Three-phase easing: fast start, slow middle, quick finish
       let eased: number;
-      if (t < 0.15) {
-        // Quick start: cover 0→30% of the bar
-        const sub = t / 0.15;
-        eased = sub * 0.3;
-      } else if (t < 0.82) {
-        // Slow middle: 30%→85%
-        const sub = (t - 0.15) / 0.67;
-        const ease = sub * sub * (3 - 2 * sub); // smoothstep
-        eased = 0.3 + ease * 0.55;
+      if (t < 0.12) {
+        eased = (t / 0.12) * 0.2;
+      } else if (t < 0.78) {
+        const sub = (t - 0.12) / 0.66;
+        eased = 0.2 + sub * sub * (3 - 2 * sub) * 0.6;
       } else {
-        // Quick finish: 85%→100%
-        const sub = (t - 0.82) / 0.18;
-        const ease = 1 - Math.pow(1 - sub, 3);
-        eased = 0.85 + ease * 0.15;
+        const sub = (t - 0.78) / 0.22;
+        eased = 0.8 + (1 - Math.pow(1 - sub, 3)) * 0.2;
       }
 
-      setProcessingProgress(eased * 100);
+      setProgress(eased);
       if (t < 1) frame = requestAnimationFrame(tick);
     };
 
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [isProcessing]);
+  }, [phase]);
 
-  // Truncated query for the acknowledgment line
   const displayQuery = useMemo(() => {
     if (!query) return '';
-    return query.length > 60 ? query.slice(0, 57) + '...' : query;
+    return query.length > 55 ? query.slice(0, 52) + '...' : query;
   }, [query]);
 
+  const isProcessing = phase === 'lifting' || phase === 'thinking' || phase === 'morphing';
+  const isMorphing = phase === 'morphing';
+
+  // Chip handlers
+  const addEntity = useCallback((item: string) => setRefineEntities((p) => [...p, item]), []);
+  const removeEntity = useCallback((item: string) => setRefineEntities((p) => p.filter((e) => e !== item)), []);
+  const addMetric = useCallback((item: string) => setRefineMetrics((p) => [...p, item]), []);
+  const removeMetric = useCallback((item: string) => setRefineMetrics((p) => p.filter((m) => m !== item)), []);
+  const addAssetClass = useCallback((item: string) => setRefineAssetClasses((p) => [...p, item]), []);
+  const removeAssetClass = useCallback((item: string) => setRefineAssetClasses((p) => p.filter((a) => a !== item)), []);
+
   return (
-    <LayoutGroup>
-      <div className="flex-1 flex flex-col min-h-screen">
-        {/* Top section */}
-        <motion.div
-          layout
-          className={`flex flex-col items-center px-6 ${
-            isProcessing ? 'pt-6' : 'flex-1 justify-center'
-          }`}
-          transition={{ type: 'spring', stiffness: 60, damping: 18, mass: 1.2 }}
-        >
-          {/* Branding */}
-          <AnimatePresence>
-            {!isProcessing && (
+    <div className="flex-1 flex flex-col min-h-screen relative overflow-hidden">
+      {/* Ambient background glow during processing */}
+      <AnimatePresence>
+        {phase !== 'idle' && (
+          <motion.div
+            className="absolute inset-0 pointer-events-none z-0"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 1.2 }}
+          >
+            <div
+              className="absolute top-[40%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] rounded-full"
+              style={{
+                background: 'radial-gradient(circle, rgba(99,102,241,0.07) 0%, rgba(99,102,241,0.02) 45%, transparent 70%)',
+              }}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ============================================================
+          IDLE STATE — Branding, search bar, presets
+          ============================================================ */}
+      <AnimatePresence>
+        {phase === 'idle' && (
+          <motion.div
+            key="idle-content"
+            className="flex-1 flex flex-col items-center justify-center px-6"
+            exit={{ opacity: 0, transition: { duration: 0.35 } }}
+          >
+            {/* Branding */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5 }}
+              className="text-center mb-10 relative"
+            >
               <motion.div
-                key="branding"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20, scale: 0.96, filter: 'blur(4px)', transition: { duration: 0.6, ease: [0.4, 0, 1, 1] } }}
-                transition={{ duration: 0.5 }}
-                className="text-center mb-10 relative"
-              >
-                <motion.div
-                  className="absolute -inset-16 rounded-full pointer-events-none"
-                  style={{
-                    background: 'radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 70%)',
-                  }}
-                  animate={{ opacity: [0.4, 0.8, 0.4], scale: [0.95, 1.05, 0.95] }}
-                  transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
-                />
-                <div className="flex items-center justify-center gap-3 mb-4 relative">
-                  <div className="w-12 h-12 rounded-xl bg-accent flex items-center justify-center font-bold text-white text-xl">
-                    F
+                className="absolute -inset-16 rounded-full pointer-events-none"
+                style={{
+                  background: 'radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 70%)',
+                }}
+                animate={{ opacity: [0.4, 0.8, 0.4], scale: [0.95, 1.05, 0.95] }}
+                transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
+              />
+              <div className="flex items-center justify-center gap-3 mb-4 relative">
+                <div className="w-12 h-12 rounded-xl bg-accent flex items-center justify-center font-bold text-white text-xl">
+                  F
+                </div>
+              </div>
+              <h1 className="text-4xl font-bold text-text-primary tracking-tight mb-2 relative">
+                CONTROL <span className="text-accent-light">F</span>
+              </h1>
+              <p className="text-text-secondary text-base font-light relative">
+                AI-powered intelligence across US public pension fund documents
+              </p>
+            </motion.div>
+
+            {/* Search bar */}
+            <div className="w-full max-w-2xl">
+              <div className="search-glow-wrapper">
+                <div className="search-glow-inner">
+                  <div className="relative group">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-text-muted group-focus-within:text-accent-light transition-colors" />
+                    <input
+                      type="text"
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && query.trim()) handleSearch();
+                      }}
+                      placeholder="What do you want to track?"
+                      className="w-full bg-transparent rounded-xl pl-12 pr-4 py-4 text-text-primary placeholder:text-text-muted focus:outline-none text-base"
+                    />
                   </div>
                 </div>
-                <h1 className="text-4xl font-bold text-text-primary tracking-tight mb-2 relative">
-                  CONTROL <span className="text-accent-light">F</span>
-                </h1>
-                <p className="text-text-secondary text-base font-light relative">
-                  AI-powered intelligence across US public pension fund documents
-                </p>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Search bar */}
-          <motion.div
-            layout
-            className={`w-full transition-all ${isProcessing ? 'max-w-xl' : 'max-w-2xl'}`}
-            transition={{ type: 'spring', stiffness: 60, damping: 18, mass: 1.2 }}
-          >
-            <div className="search-glow-wrapper">
-              <div className="search-glow-inner">
-                <div className="relative group">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-text-muted group-focus-within:text-accent-light transition-colors" />
-                  <input
-                    type="text"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && query.trim()) handleSearch();
-                    }}
-                    placeholder="What do you want to track?"
-                    className={`w-full bg-transparent rounded-xl pl-12 pr-4 text-text-primary placeholder:text-text-muted focus:outline-none text-base transition-all ${
-                      isProcessing ? 'py-3 text-sm' : 'py-4'
-                    }`}
-                    readOnly={isProcessing}
-                  />
-                </div>
               </div>
-            </div>
-            {/* "Press Enter to search" hint */}
-            <AnimatePresence>
-              {!isProcessing && query.trim().length > 0 && (
-                <motion.p
-                  initial={{ opacity: 0, y: -4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -4 }}
-                  transition={{ duration: 0.2 }}
-                  className="text-xs text-text-muted mt-2 text-center"
-                >
-                  Press Enter to search
-                </motion.p>
-              )}
-            </AnimatePresence>
-          </motion.div>
-
-          {/* Preset pills */}
-          <AnimatePresence>
-            {!isProcessing && (
-              <motion.div
-                key="presets"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0, y: 20, scale: 0.97, filter: 'blur(3px)', transition: { duration: 0.5, ease: [0.4, 0, 1, 1] } }}
-                transition={{ duration: 0.5, delay: 0.2 }}
-                className="flex flex-wrap justify-center gap-2 max-w-2xl mt-8"
-              >
-                {presets.map((preset, i) => (
-                  <motion.button
-                    key={preset}
-                    initial={{ opacity: 0, y: 10 }}
+              <AnimatePresence>
+                {query.trim().length > 0 && (
+                  <motion.p
+                    initial={{ opacity: 0, y: -4 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.3 + i * 0.05 }}
-                    whileHover={{
-                      scale: 1.03,
-                      borderColor: 'rgba(99,102,241,0.5)',
-                      boxShadow: '0 0 16px rgba(99,102,241,0.12)',
-                    }}
-                    onClick={() => handleSearch(preset)}
-                    className="px-4 py-2 rounded-lg bg-bg-card/80 border border-border text-text-secondary text-sm hover:text-text-primary transition-all cursor-pointer backdrop-blur-sm"
+                    exit={{ opacity: 0, y: -4 }}
+                    transition={{ duration: 0.2 }}
+                    className="text-xs text-text-muted mt-2 text-center"
                   >
-                    <Zap className="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5" />
-                    {preset}
-                  </motion.button>
-                ))}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </motion.div>
+                    Press Enter to search
+                  </motion.p>
+                )}
+              </AnimatePresence>
+            </div>
 
-        {/* Processing visualization */}
-        <AnimatePresence>
-          {isProcessing && (
+            {/* Preset pills */}
             <motion.div
-              key="processing"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              transition={{ delay: 0.7, duration: 0.8, ease: 'easeOut' }}
-              className="flex-1 flex flex-col items-center justify-center px-6"
+              transition={{ duration: 0.5, delay: 0.2 }}
+              className="flex flex-wrap justify-center gap-2 max-w-2xl mt-8"
             >
-              {/* Query acknowledgment — shows what you asked */}
-              <motion.div
-                className="flex items-center gap-2 mb-8"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.4, duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-              >
-                <Sparkles className="w-3.5 h-3.5 text-accent-light/60" />
-                <span className="text-sm text-text-muted italic">
-                  &ldquo;{displayQuery}&rdquo;
-                </span>
-              </motion.div>
+              {presets.map((preset, i) => (
+                <motion.button
+                  key={preset}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 + i * 0.05 }}
+                  whileHover={{
+                    scale: 1.03,
+                    borderColor: 'rgba(99,102,241,0.5)',
+                    boxShadow: '0 0 16px rgba(99,102,241,0.12)',
+                  }}
+                  onClick={() => handleSearch(preset)}
+                  className="px-4 py-2 rounded-lg bg-bg-card/80 border border-border text-text-secondary text-sm hover:text-text-primary transition-all cursor-pointer backdrop-blur-sm"
+                >
+                  <Zap className="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5" />
+                  {preset}
+                </motion.button>
+              ))}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-              {/* Multi-ring scanner + floating docs + particles */}
-              <div className="relative mb-10" style={{ width: 240, height: 240 }}>
-                {/* Ambient glow behind the whole visualization */}
+      {/* ============================================================
+          UNIFIED BUBBLE — Refine + processing in one continuous bubble
+          ============================================================ */}
+      <AnimatePresence>
+        {(phase === 'refine' || isProcessing) && (
+          <motion.div
+            key="bubble-scene"
+            className="absolute inset-0 flex flex-col items-center justify-center px-6 z-10"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{
+              opacity: 0,
+              y: -60,
+              scale: 0.85,
+              filter: 'blur(6px)',
+              transition: { duration: 0.45, ease: [0.4, 0, 1, 1] },
+            }}
+            transition={{ duration: 0.4 }}
+          >
+            {/* Orbital ring + particles — only during thinking/morphing */}
+            {(phase === 'thinking' || phase === 'morphing') && (
+              <div className="absolute pointer-events-none" style={{ width: 200, height: 200 }}>
+                <OrbitalRing progress={progress} />
+              </div>
+            )}
+            {phase === 'thinking' && (
+              <div className="absolute pointer-events-none">
+                <AmbientParticles />
+              </div>
+            )}
+
+            {/* The evolving bubble card */}
+            <motion.div
+              className="relative z-10 w-full flex justify-center"
+              initial={{ y: 30, opacity: 0, scale: 0.95 }}
+              animate={{
+                y: 0,
+                opacity: 1,
+                scale: isMorphing ? 1.02 : 1,
+              }}
+              transition={{
+                type: 'spring',
+                stiffness: 280,
+                damping: 26,
+                mass: 0.9,
+              }}
+            >
+              <motion.div
+                className="relative overflow-hidden rounded-2xl w-full"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(26, 27, 36, 0.97) 0%, rgba(17, 18, 24, 0.99) 100%)',
+                  border: '1px solid rgba(99, 102, 241, 0.3)',
+                }}
+                animate={{
+                  maxWidth: phase === 'refine' ? 560 : 420,
+                  boxShadow: isMorphing
+                    ? [
+                        '0 0 30px rgba(99,102,241,0.15), 0 0 60px rgba(99,102,241,0.08)',
+                        '0 0 50px rgba(99,102,241,0.25), 0 0 100px rgba(99,102,241,0.12)',
+                        '0 0 30px rgba(16,185,129,0.15), 0 0 60px rgba(16,185,129,0.06)',
+                      ]
+                    : phase === 'refine'
+                      ? '0 0 40px rgba(99,102,241,0.12), 0 0 80px rgba(99,102,241,0.06)'
+                      : [
+                          '0 0 24px rgba(99,102,241,0.1), 0 0 48px rgba(99,102,241,0.05)',
+                          '0 0 36px rgba(99,102,241,0.18), 0 0 72px rgba(99,102,241,0.08)',
+                          '0 0 24px rgba(99,102,241,0.1), 0 0 48px rgba(99,102,241,0.05)',
+                        ],
+                  borderColor: isMorphing
+                    ? 'rgba(16, 185, 129, 0.35)'
+                    : 'rgba(99, 102, 241, 0.3)',
+                }}
+                transition={{
+                  maxWidth: { type: 'spring', stiffness: 200, damping: 24 },
+                  boxShadow: { duration: 2.5, repeat: Infinity, ease: 'easeInOut' },
+                  borderColor: { duration: 0.6, ease: 'easeOut' },
+                }}
+              >
+                {/* Shimmer sweep */}
                 <motion.div
-                  className="absolute inset-0 rounded-full pointer-events-none"
+                  className="absolute inset-0 pointer-events-none"
                   style={{
-                    background: 'radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 65%)',
+                    background: 'linear-gradient(105deg, transparent 40%, rgba(129,140,248,0.06) 50%, transparent 60%)',
                   }}
-                  initial={{ opacity: 0, scale: 0.5 }}
-                  animate={{ opacity: [0.3, 0.6, 0.3], scale: 1 }}
-                  transition={{
-                    opacity: { duration: 3, repeat: Infinity, ease: 'easeInOut', delay: 0.8 },
-                    scale: { duration: 1.2, ease: [0.22, 1, 0.36, 1] },
-                  }}
+                  animate={{ x: ['-150%', '250%'] }}
+                  transition={{ duration: 3.5, repeat: Infinity, ease: 'linear', delay: 0.5 }}
                 />
 
-                {/* Concentric rings — staggered entrance */}
-                <ConcentricRing radius={36} duration={8} opacity={0.45} strokeWidth={1.5} enterDelay={0.3} />
-                <ConcentricRing radius={56} duration={12} reverse opacity={0.25} strokeWidth={1} enterDelay={0.7} />
-                <ConcentricRing radius={76} duration={16} opacity={0.12} strokeWidth={0.7} enterDelay={1.1} />
-
-                {/* Central pulsing node */}
-                <div className="absolute inset-0 flex items-center justify-center">
+                {/* Query header — always visible */}
+                <div className="flex items-center gap-2.5 px-5 py-3.5 relative">
                   <motion.div
-                    initial={{ opacity: 0, scale: 0.7 }}
-                    animate={{
-                      opacity: 1,
-                      scale: 1,
-                      boxShadow: [
-                        '0 0 16px rgba(99,102,241,0.1)',
-                        '0 0 32px rgba(99,102,241,0.2)',
-                        '0 0 16px rgba(99,102,241,0.1)',
-                      ],
-                    }}
-                    transition={{
-                      opacity: { delay: 0.2, duration: 0.8 },
-                      scale: { delay: 0.2, duration: 0.8, ease: [0.22, 1, 0.36, 1] },
-                      boxShadow: { delay: 1, duration: 3, repeat: Infinity, ease: 'easeInOut' },
-                    }}
-                    className="w-16 h-16 rounded-2xl bg-bg-card border border-accent/30 flex items-center justify-center"
+                    animate={{ rotate: phase === 'refine' ? 0 : [0, 15, -15, 0] }}
+                    transition={{ duration: 4, repeat: phase === 'refine' ? 0 : Infinity, ease: 'easeInOut' }}
                   >
-                    <CentralNode />
+                    <Sparkles className="w-4 h-4 text-accent-light/70 shrink-0" />
                   </motion.div>
+                  <span className="text-sm text-text-primary font-medium whitespace-nowrap flex-1 min-w-0 truncate">
+                    {displayQuery}
+                  </span>
+                  {phase === 'refine' && (
+                    <button
+                      onClick={handleBackToIdle}
+                      className="text-[11px] text-accent-light/50 hover:text-accent-light transition-colors shrink-0 cursor-pointer"
+                    >
+                      Edit
+                    </button>
+                  )}
                 </div>
 
-                {/* Floating documents — spaced out across the timeline */}
-                {[0, 1, 2, 3].map((i) => (
-                  <FloatingDoc key={`doc-${i}`} index={i} total={4} />
-                ))}
+                {/* ---- Refine content — collapses when processing starts ---- */}
+                <AnimatePresence>
+                  {phase === 'refine' && (
+                    <motion.div
+                      key="refine-inner"
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      transition={{
+                        type: 'spring',
+                        stiffness: 300,
+                        damping: 28,
+                        opacity: { duration: 0.25 },
+                      }}
+                      className="overflow-hidden"
+                    >
+                      <div className="px-5 pb-5 pt-1">
+                        {/* Divider */}
+                        <div className="flex items-center gap-3 mb-4">
+                          <div className="flex-1 h-px bg-gradient-to-r from-accent/20 via-border/50 to-transparent" />
+                        </div>
 
-                {/* Orbiting particles — slow ambient dots */}
-                {Array.from({ length: 8 }).map((_, i) => (
-                  <OrbitParticle key={`particle-${i}`} index={i} total={8} />
-                ))}
-              </div>
+                        <p className="text-xs text-text-muted mb-4">Adjust before tracking</p>
 
-              {/* Status message — slower cycling, smoother transitions */}
-              <div className="h-8 mb-5">
-                <AnimatePresence mode="wait">
+                        <ChipSection
+                          label="Entities"
+                          items={refineEntities}
+                          allItems={ALL_ENTITIES}
+                          onAdd={addEntity}
+                          onRemove={removeEntity}
+                        />
+                        <ChipSection
+                          label="Metrics"
+                          items={refineMetrics}
+                          allItems={ALL_METRICS}
+                          onAdd={addMetric}
+                          onRemove={removeMetric}
+                        />
+                        <ChipSection
+                          label="Asset Classes"
+                          items={refineAssetClasses}
+                          allItems={ALL_ASSET_CLASSES}
+                          onAdd={addAssetClass}
+                          onRemove={removeAssetClass}
+                        />
+
+                        {/* Frequency */}
+                        <div className="mb-5">
+                          <span className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-2.5 block">
+                            Frequency
+                          </span>
+                          <div className="flex gap-2">
+                            {FREQUENCIES.map((f) => (
+                              <button
+                                key={f}
+                                onClick={() => setRefineFrequency(f)}
+                                className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${
+                                  refineFrequency === f
+                                    ? 'bg-accent text-white'
+                                    : 'bg-bg-hover/50 text-text-muted border border-border/50 hover:text-text-primary'
+                                }`}
+                              >
+                                {f}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Start Tracking */}
+                        <motion.button
+                          onClick={handleStartTracking}
+                          disabled={refineEntities.length === 0 || refineMetrics.length === 0}
+                          whileHover={{ scale: 1.01 }}
+                          whileTap={{ scale: 0.99 }}
+                          className="w-full py-3 rounded-xl bg-accent text-white font-semibold text-sm hover:bg-accent-light transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                        >
+                          Start Tracking
+                          <ChevronRight className="w-4 h-4" />
+                        </motion.button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* ---- Morph metadata — slides in during morph phase ---- */}
+                <AnimatePresence>
+                  {isMorphing && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      transition={{ delay: 0.15, duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+                      className="overflow-hidden"
+                    >
+                      <div className="flex items-center gap-3 px-5 pb-3.5 pt-0">
+                        <div className="flex-1 h-px bg-gradient-to-r from-accent/20 via-border/50 to-transparent" />
+                      </div>
+                      <motion.div
+                        className="flex items-center gap-3 px-5 pb-4"
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.35, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <motion.div
+                            className="w-1.5 h-1.5 rounded-full bg-green"
+                            animate={{ opacity: [1, 0.4, 1] }}
+                            transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+                          />
+                          <span className="text-xs text-green font-medium">Active</span>
+                        </div>
+                        <span className="text-[10px] text-text-muted/40">|</span>
+                        <div className="flex items-center gap-1 text-xs text-text-muted">
+                          <Bell className="w-3 h-3" />
+                          <span>{refineFrequency}</span>
+                        </div>
+                        <span className="text-[10px] text-text-muted/40">|</span>
+                        <div className="flex items-center gap-1 text-xs text-text-muted">
+                          <Activity className="w-3 h-3" />
+                          <span>{refineEntities.length} funds</span>
+                        </div>
+                      </motion.div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </motion.div>
+            </motion.div>
+
+            {/* Processing status message */}
+            <div className="h-8 mt-2">
+              <AnimatePresence mode="wait">
+                {phase === 'thinking' && (
                   <motion.p
                     key={messageIndex}
-                    initial={{ opacity: 0, y: 6, filter: 'blur(4px)' }}
+                    initial={{ opacity: 0, y: 8, filter: 'blur(4px)' }}
                     animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-                    exit={{ opacity: 0, y: -6, filter: 'blur(4px)' }}
-                    transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
-                    className="text-text-secondary text-sm tracking-wide"
+                    exit={{ opacity: 0, y: -8, filter: 'blur(4px)' }}
+                    transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+                    className="text-text-secondary text-sm tracking-wide text-center"
                   >
                     {processingMessages[messageIndex]}
                   </motion.p>
-                </AnimatePresence>
-              </div>
+                )}
+                {phase === 'morphing' && (
+                  <motion.p
+                    key="morph-msg"
+                    initial={{ opacity: 0, y: 8, filter: 'blur(4px)' }}
+                    animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                    transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+                    className="text-accent-light text-sm font-medium tracking-wide text-center"
+                  >
+                    Tracker created
+                  </motion.p>
+                )}
+              </AnimatePresence>
+            </div>
 
-              {/* Premium progress bar */}
-              <motion.div
-                className="w-72 mb-7"
-                initial={{ opacity: 0, scaleX: 0.8 }}
-                animate={{ opacity: 1, scaleX: 1 }}
-                transition={{ delay: 0.5, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-              >
-                <div className="progress-bar-track">
-                  <div
-                    className="progress-bar-fill"
-                    style={{ width: `${processingProgress}%` }}
-                  />
-                </div>
-                {/* Percentage label */}
-                <motion.p
-                  className="text-[11px] text-text-muted/60 text-right mt-1.5 tabular-nums"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: 0.8, duration: 0.5 }}
-                >
-                  {Math.round(processingProgress)}%
-                </motion.p>
-              </motion.div>
-
-              {/* Counters — delayed reveal with blur-to-sharp */}
-              <motion.div
-                className="flex gap-10 text-sm"
+            {/* Progress percentage */}
+            {(phase === 'thinking' || phase === 'morphing') && (
+              <motion.p
+                className="text-[11px] text-text-muted/40 mt-1 tabular-nums"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                transition={{ delay: 1.2, duration: 0.8 }}
+                transition={{ delay: 0.5, duration: 0.5 }}
               >
-                <motion.div
-                  className="text-text-muted"
-                  initial={{ filter: 'blur(8px)', scale: 0.92 }}
-                  animate={{ filter: 'blur(0px)', scale: 1 }}
-                  transition={{ delay: 1.4, duration: 0.8, ease: 'easeOut' }}
-                >
-                  <span className="text-accent-light font-semibold text-lg tabular-nums">{docsScanned}</span>
-                  <span className="ml-1.5">documents scanned</span>
-                </motion.div>
-                <motion.div
-                  className="text-text-muted"
-                  initial={{ filter: 'blur(8px)', scale: 0.92 }}
-                  animate={{ filter: 'blur(0px)', scale: 1 }}
-                  transition={{ delay: 1.8, duration: 0.8, ease: 'easeOut' }}
-                >
-                  <span className="text-accent-light font-semibold text-lg tabular-nums">{metricsFound}</span>
-                  <span className="ml-1.5">metrics found</span>
-                </motion.div>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-    </LayoutGroup>
+                {Math.round(progress * 100)}%
+              </motion.p>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }

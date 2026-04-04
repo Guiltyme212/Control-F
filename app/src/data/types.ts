@@ -30,6 +30,8 @@ export interface Tracker {
     metricType?: string;
     assetClass?: string;
   };
+  latestFinding?: string;
+  newAlerts?: number;
 }
 
 export interface ExtractedData {
