@@ -774,7 +774,17 @@ export function UploadPage() {
                 <div className="bg-bg-card border border-border rounded-xl p-6 text-center">
                   <AlertTriangle className="w-12 h-12 text-yellow mx-auto mb-4" />
                   <h3 className="text-text-primary font-semibold mb-2">No Metrics Extracted</h3>
-                  <p className="text-sm text-text-secondary mb-6">The selected PDFs did not contain extractable financial metrics.</p>
+                  <p className="text-sm text-text-secondary mb-4">The selected PDFs did not contain extractable financial metrics.</p>
+                  {extractionLogs.some(l => l.status === 'error') && (
+                    <div className="bg-bg-primary border border-red/20 rounded-lg p-3 mb-4 text-left font-mono text-xs space-y-1 max-h-40 overflow-y-auto">
+                      {extractionLogs.filter(l => l.status === 'error').map((entry, i) => (
+                        <div key={i} className="text-red flex items-start gap-2">
+                          <span className="shrink-0">✗</span>
+                          <span>{entry.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <button onClick={() => { setScrapeState('results'); setScrapeMetrics([]); }} className="px-6 py-2.5 rounded-lg bg-accent text-white font-medium hover:bg-accent-light transition-colors cursor-pointer">
                     Try Other PDFs
                   </button>

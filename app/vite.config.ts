@@ -1,43 +1,56 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import { execSync } from 'child_process'
-import { readFileSync, mkdtempSync, existsSync, appendFileSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { readFileSync, writeFileSync, mkdtempSync, existsSync, appendFileSync } from 'fs'
+import { join, resolve } from 'path'
 import { tmpdir } from 'os'
+import { PDFDocument } from 'pdf-lib'
+import { getDocument, type DocumentInitParameters } from 'pdfjs-dist/legacy/build/pdf.mjs'
 
 const MAX_PAGES = 50
 
 // Cache downloaded + split PDFs so the client can fetch one chunk at a time
 const pdfCache = new Map<string, { tmpDir: string; totalPages: number; chunkCount: number }>()
 
-function ensurePdfCached(targetUrl: string): { tmpDir: string; totalPages: number; chunkCount: number } {
+async function ensurePdfCached(targetUrl: string): Promise<{ tmpDir: string; totalPages: number; chunkCount: number }> {
   const existing = pdfCache.get(targetUrl)
   if (existing && existsSync(join(existing.tmpDir, 'source.pdf'))) return existing
 
   const tmp = mkdtempSync(join(tmpdir(), 'pdf-split-'))
   const srcPath = join(tmp, 'source.pdf')
 
-  // Download synchronously via curl (simpler for cache setup)
-  execSync(`curl -sL -o "${srcPath}" "${targetUrl}"`, { timeout: 60000 })
+  // Download via fetch
+  const resp = await fetch(targetUrl)
+  if (!resp.ok) throw new Error(`Failed to download PDF: ${resp.status}`)
+  const pdfBytes = Buffer.from(await resp.arrayBuffer())
+  writeFileSync(srcPath, pdfBytes)
 
-  const totalPages = parseInt(
-    execSync(`qpdf --show-npages "${srcPath}"`, { encoding: 'utf8' }).trim(),
-    10,
-  )
+  // Use pdfjs-dist for robust page counting (handles PDFs that pdf-lib can't)
+  const pdfjsDoc = await getDocument({ data: new Uint8Array(pdfBytes), useSystemFonts: true } as DocumentInitParameters).promise
+  const totalPages = pdfjsDoc.numPages
+  pdfjsDoc.destroy()
 
-  // Pre-split into chunks
+  // Try pdf-lib for splitting; fall back to raw file if it can't parse
   const chunkCount = Math.ceil(totalPages / MAX_PAGES)
-  for (let i = 0; i < chunkCount; i++) {
-    const start = i * MAX_PAGES + 1
-    const end = Math.min(start + MAX_PAGES - 1, totalPages)
-    const chunkPath = join(tmp, `chunk_${i}.pdf`)
-    if (totalPages <= MAX_PAGES) {
-      // Single chunk — just copy the source
-      execSync(`cp "${srcPath}" "${chunkPath}"`)
-    } else {
-      execSync(`qpdf "${srcPath}" --pages . ${start}-${end} -- "${chunkPath}"`)
+  try {
+    const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true })
+    for (let i = 0; i < chunkCount; i++) {
+      const start = i * MAX_PAGES
+      const end = Math.min(start + MAX_PAGES, totalPages)
+      const chunkPath = join(tmp, `chunk_${i}.pdf`)
+      if (totalPages <= MAX_PAGES) {
+        writeFileSync(chunkPath, pdfBytes)
+      } else {
+        const chunkDoc = await PDFDocument.create()
+        const indices = Array.from({ length: end - start }, (_, j) => start + j)
+        const copiedPages = await chunkDoc.copyPages(pdfDoc, indices)
+        for (const page of copiedPages) chunkDoc.addPage(page)
+        writeFileSync(chunkPath, await chunkDoc.save())
+      }
     }
+  } catch {
+    // pdf-lib can't split — store raw as single chunk (page count is still accurate)
+    writeFileSync(join(tmp, 'chunk_0.pdf'), pdfBytes)
   }
 
   const entry = { tmpDir: tmp, totalPages, chunkCount }
@@ -46,18 +59,23 @@ function ensurePdfCached(targetUrl: string): { tmpDir: string; totalPages: numbe
 }
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@': resolve(__dirname, 'src'),
+    },
+  },
   plugins: [
     react(),
     tailwindcss(),
     {
       name: 'pdf-proxy',
       configureServer(server) {
-        const LOG_FILE = join(tmpdir(), 'controlf-extraction.log')
-        // Clear log on server start
-        writeFileSync(LOG_FILE, `--- Control F Extraction Log (${new Date().toISOString()}) ---\n`)
+        const LOG_FILE = join(__dirname, 'extraction.log')
+        // Append a run separator (don't clear — keep history across restarts)
+        appendFileSync(LOG_FILE, `\n${'='.repeat(70)}\n  Server started: ${new Date().toISOString()}\n${'='.repeat(70)}\n`)
 
         server.middlewares.use(async (req, res, next) => {
-          // --- /api/log → append to log file ---
+          // --- /api/log → append to log file (UI-level logs) ---
           if (req.url?.startsWith('/api/log') && req.method === 'POST') {
             let body = ''
             req.on('data', (chunk: Buffer) => { body += chunk.toString() })
@@ -74,6 +92,28 @@ export default defineConfig({
             return
           }
 
+          // --- /api/server-log → detailed behind-the-scenes logging ---
+          if (req.url?.startsWith('/api/server-log') && req.method === 'POST') {
+            let body = ''
+            req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+            req.on('end', () => {
+              try {
+                const payload = JSON.parse(body)
+                const ts = new Date().toISOString()
+                let lines = `\n[${ts}] ${payload.event || 'LOG'}\n`
+                for (const [key, val] of Object.entries(payload)) {
+                  if (key === 'event') continue
+                  const display = typeof val === 'object' ? JSON.stringify(val) : String(val)
+                  lines += `  ${key}: ${display}\n`
+                }
+                appendFileSync(LOG_FILE, lines)
+              } catch { /* ignore */ }
+              res.statusCode = 204
+              res.end()
+            })
+            return
+          }
+
           // --- /proxy-pdf-info?url=... → { totalPages, chunkCount } ---
           if (req.url?.startsWith('/proxy-pdf-info')) {
             const parsed = new URL(req.url, 'http://localhost')
@@ -81,7 +121,7 @@ export default defineConfig({
             if (!targetUrl) { res.statusCode = 400; res.end('Missing url'); return }
 
             try {
-              const info = ensurePdfCached(targetUrl)
+              const info = await ensurePdfCached(targetUrl)
               res.setHeader('Content-Type', 'application/json')
               res.end(JSON.stringify({ totalPages: info.totalPages, chunkCount: info.chunkCount }))
             } catch (err: unknown) {
@@ -99,7 +139,7 @@ export default defineConfig({
             if (!targetUrl) { res.statusCode = 400; res.end('Missing url'); return }
 
             try {
-              const info = ensurePdfCached(targetUrl)
+              const info = await ensurePdfCached(targetUrl)
               const chunkPath = join(info.tmpDir, `chunk_${chunkIdx}.pdf`)
               if (!existsSync(chunkPath)) {
                 res.statusCode = 404
@@ -125,16 +165,24 @@ export default defineConfig({
             if (!targetUrl || !pagesParam) { res.statusCode = 400; res.end('Missing url or pages'); return }
 
             try {
-              const info = ensurePdfCached(targetUrl)
+              const info = await ensurePdfCached(targetUrl)
               const srcPath = join(info.tmpDir, 'source.pdf')
-              const subsetPath = join(info.tmpDir, `subset_${pagesParam.replace(/,/g, '_').slice(0, 60)}.pdf`)
+              const pdfBytes = readFileSync(srcPath)
 
-              // qpdf page ranges: "1,5,12,30" → "1,5,12,30"
-              execSync(
-                `qpdf "${srcPath}" --pages . ${pagesParam} -- "${subsetPath}"`,
-                { encoding: 'utf8' },
-              )
-              const buffer = readFileSync(subsetPath)
+              let buffer: Buffer
+              try {
+                const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true })
+                // pages param is "1,5,12,30" (1-indexed) → convert to 0-indexed
+                const pageIndices = pagesParam.split(',').map(p => parseInt(p, 10) - 1)
+                const subsetDoc = await PDFDocument.create()
+                const copiedPages = await subsetDoc.copyPages(pdfDoc, pageIndices)
+                for (const page of copiedPages) subsetDoc.addPage(page)
+                buffer = Buffer.from(await subsetDoc.save())
+              } catch {
+                // pdf-lib can't subset this PDF — return the whole file
+                buffer = Buffer.from(pdfBytes)
+              }
+
               res.setHeader('Content-Type', 'application/pdf')
               res.setHeader('Content-Length', buffer.length.toString())
               res.end(buffer)

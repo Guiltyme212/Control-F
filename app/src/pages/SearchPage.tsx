@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Zap, Sparkles, Bell, Activity, X, Plus, ChevronRight } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
+import { DataGridHero } from '@/components/ui/data-grid-hero';
 
 const presets = [
   "New LP commitments to infrastructure funds",
@@ -399,11 +400,37 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
       {/* ============================================================
           IDLE STATE — Branding, search bar, presets
           ============================================================ */}
+      {/* Full-screen animated grid background — behind all content */}
+      <AnimatePresence>
+        {phase === 'idle' && (
+          <motion.div
+            key="grid-bg"
+            className="absolute inset-0 z-0 pointer-events-none"
+            exit={{ opacity: 0, transition: { duration: 0.35 } }}
+          >
+            <DataGridHero
+              rows={39}
+              cols={19}
+              spacing={4}
+              duration={10}
+              color="var(--color-accent)"
+              animationType="random"
+              pulseEffect={true}
+              mouseGlow={false}
+              opacityMin={0.16}
+              opacityMax={0.8}
+              background="transparent"
+              className="w-full h-full opacity-80"
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {phase === 'idle' && (
           <motion.div
             key="idle-content"
-            className="flex-1 flex flex-col items-center justify-center px-6"
+            className="flex-1 flex flex-col items-center justify-center px-6 relative z-10"
             exit={{ opacity: 0, transition: { duration: 0.35 } }}
           >
             {/* Branding */}
@@ -555,17 +582,17 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                   maxWidth: phase === 'refine' ? 560 : 420,
                   boxShadow: isMorphing
                     ? [
-                        '0 0 30px rgba(99,102,241,0.15), 0 0 60px rgba(99,102,241,0.08)',
-                        '0 0 50px rgba(99,102,241,0.25), 0 0 100px rgba(99,102,241,0.12)',
-                        '0 0 30px rgba(16,185,129,0.15), 0 0 60px rgba(16,185,129,0.06)',
-                      ]
+                      '0 0 30px rgba(99,102,241,0.15), 0 0 60px rgba(99,102,241,0.08)',
+                      '0 0 50px rgba(99,102,241,0.25), 0 0 100px rgba(99,102,241,0.12)',
+                      '0 0 30px rgba(16,185,129,0.15), 0 0 60px rgba(16,185,129,0.06)',
+                    ]
                     : phase === 'refine'
                       ? '0 0 40px rgba(99,102,241,0.12), 0 0 80px rgba(99,102,241,0.06)'
                       : [
-                          '0 0 24px rgba(99,102,241,0.1), 0 0 48px rgba(99,102,241,0.05)',
-                          '0 0 36px rgba(99,102,241,0.18), 0 0 72px rgba(99,102,241,0.08)',
-                          '0 0 24px rgba(99,102,241,0.1), 0 0 48px rgba(99,102,241,0.05)',
-                        ],
+                        '0 0 24px rgba(99,102,241,0.1), 0 0 48px rgba(99,102,241,0.05)',
+                        '0 0 36px rgba(99,102,241,0.18), 0 0 72px rgba(99,102,241,0.08)',
+                        '0 0 24px rgba(99,102,241,0.1), 0 0 48px rgba(99,102,241,0.05)',
+                      ],
                   borderColor: isMorphing
                     ? 'rgba(16, 185, 129, 0.35)'
                     : 'rgba(99, 102, 241, 0.3)',
@@ -663,11 +690,10 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                               <button
                                 key={f}
                                 onClick={() => setRefineFrequency(f)}
-                                className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${
-                                  refineFrequency === f
-                                    ? 'bg-accent text-white'
-                                    : 'bg-bg-hover/50 text-text-muted border border-border/50 hover:text-text-primary'
-                                }`}
+                                className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${refineFrequency === f
+                                  ? 'bg-accent text-white'
+                                  : 'bg-bg-hover/50 text-text-muted border border-border/50 hover:text-text-primary'
+                                  }`}
                               >
                                 {f}
                               </button>

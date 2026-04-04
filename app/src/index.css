@@ -450,6 +450,74 @@ body::after {
   pointer-events: none;
 }
 
+/* Grid background pattern for GridBeam */
+.bg-grid {
+  background-size: 32px 32px;
+  background-image:
+    linear-gradient(to right, rgba(99, 102, 241, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(99, 102, 241, 0.06) 1px, transparent 1px);
+}
+
+/* ================================================================
+   DATA GRID HERO — Animated generative grid background
+   ================================================================ */
+
+@keyframes cell-pulse {
+  from {
+    opacity: var(--opacity-min);
+  }
+  to {
+    opacity: var(--opacity-max);
+  }
+}
+
+.data-grid-hero {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.data-grid-hero .grid-container {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.data-grid-hero .grid-container::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--mouse-glow-opacity, 0);
+  background: radial-gradient(
+    300px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    rgba(99, 102, 241, 0.12),
+    transparent 60%
+  );
+  transition: opacity 0.3s ease;
+}
+
+.data-grid-hero .grid-cell {
+  border-radius: 2px;
+  opacity: var(--opacity-min, 0.05);
+  transition: opacity 0.2s ease;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.data-grid-hero .hero-content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+}
+
 /* Focus-visible ring styles */
 *:focus-visible {
   outline: 2px solid var(--color-accent);

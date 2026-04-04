@@ -129,6 +129,45 @@ async function fetchPdfChunk(pdfUrl: string, chunkIdx: number): Promise<string> 
 }
 
 /* ------------------------------------------------------------------ */
+/*  JSON recovery for truncated responses                              */
+/* ------------------------------------------------------------------ */
+
+function parseOrSalvageJson(raw: string): ExtractedData {
+  let jsonStr = raw.trim();
+  if (jsonStr.startsWith('```')) {
+    jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+  }
+
+  // Try parsing as-is first
+  try {
+    return JSON.parse(jsonStr);
+  } catch {
+    // Response was likely truncated — try to salvage by closing the JSON
+  }
+
+  // Find the last complete object in extracted_metrics array
+  const metricsStart = jsonStr.indexOf('"extracted_metrics"');
+  if (metricsStart === -1) {
+    throw new Error(`No metrics in response. Preview: ${jsonStr.slice(0, 300)}`);
+  }
+
+  // Find the last complete object boundary (closing brace followed by comma or array end)
+  const lastCompleteObj = jsonStr.lastIndexOf('},');
+  if (lastCompleteObj === -1) {
+    throw new Error(`No complete metrics found. Preview: ${jsonStr.slice(0, 300)}`);
+  }
+
+  // Truncate after the last complete object and close the structure
+  const salvaged = jsonStr.slice(0, lastCompleteObj + 1) + '], "cross_reference_signals": [] }';
+
+  try {
+    return JSON.parse(salvaged);
+  } catch {
+    throw new Error(`Could not salvage truncated response. Preview: ${jsonStr.slice(0, 300)}`);
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Core extraction: sends a base64 PDF chunk to Claude                */
 /* ------------------------------------------------------------------ */
 
@@ -139,10 +178,22 @@ async function extractChunk(
   pageOffset: number,
   totalPages: number,
 ): Promise<ExtractionResult> {
+  const startTime = Date.now();
+  const pdfSizeKB = Math.round((base64.length * 3) / 4 / 1024);
   const isChunked = totalPages > MAX_PDF_PAGES;
   const userText = isChunked
     ? `Extract all financial metrics from this document. This is pages ${pageOffset + 1}–${Math.min(pageOffset + MAX_PDF_PAGES, totalPages)} of a ${totalPages}-page document. Report page_reference relative to the original document (add ${pageOffset} to any page number you see).`
     : 'Extract all financial metrics from this document.';
+
+  serverLog('API_REQUEST', {
+    function: 'extractChunk',
+    source: sourceName,
+    pdfSizeKB,
+    totalPages,
+    pageOffset,
+    model: 'claude-sonnet-4-6',
+    maxTokens: 16000,
+  });
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -153,8 +204,8 @@ async function extractChunk(
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 8000,
+      model: 'claude-sonnet-4-6',
+      max_tokens: 16000,
       system: SYSTEM_PROMPT,
       messages: [
         {
@@ -175,14 +226,22 @@ async function extractChunk(
     }),
   });
 
-  if (response.status === 401) {
-    throw new Error('Invalid API key. Please check your Anthropic API key in settings.');
-  }
-  if (response.status === 429) {
-    throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-  }
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '');
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    serverLog('API_ERROR', {
+      function: 'extractChunk',
+      source: sourceName,
+      status: response.status,
+      elapsed: `${elapsed}s`,
+      error: errorBody.slice(0, 500),
+    });
+    if (response.status === 401) {
+      throw new Error('Invalid API key. Please check your Anthropic API key in settings.');
+    }
+    if (response.status === 429) {
+      throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+    }
     if (errorBody.includes('100 PDF pages')) {
       throw new Error('PDF too large (over 100 pages). This document has a complex structure that prevents automatic splitting.');
     }
@@ -196,6 +255,25 @@ async function extractChunk(
     throw new Error('API returned invalid JSON response.');
   }
 
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  const usage = data.usage || {};
+  const inputTokens = usage.input_tokens || 0;
+  const outputTokens = usage.output_tokens || 0;
+  // Sonnet pricing: $3/M input, $15/M output
+  const costUsd = (inputTokens * 3 + outputTokens * 15) / 1_000_000;
+
+  serverLog('API_RESPONSE', {
+    function: 'extractChunk',
+    source: sourceName,
+    model: data.model || 'unknown',
+    stopReason: data.stop_reason || 'unknown',
+    inputTokens,
+    outputTokens,
+    costUsd: `$${costUsd.toFixed(4)}`,
+    elapsed: `${elapsed}s`,
+    responseChars: data.content?.[0]?.text?.length || 0,
+  });
+
   const textBlock = data.content?.find(
     (block: { type: string }) => block.type === 'text'
   );
@@ -203,16 +281,7 @@ async function extractChunk(
     throw new Error('No text content in API response');
   }
 
-  let parsed: ExtractedData;
-  try {
-    let jsonStr = textBlock.text.trim();
-    if (jsonStr.startsWith('```')) {
-      jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-    }
-    parsed = JSON.parse(jsonStr);
-  } catch {
-    throw new Error('Failed to parse extraction results. The API returned malformed JSON.');
-  }
+  const parsed = parseOrSalvageJson(textBlock.text);
 
   const metrics: Metric[] = (parsed.extracted_metrics || []).map((am) => ({
     date: am.date || '',
@@ -227,6 +296,13 @@ async function extractChunk(
     evidence: am.evidence_text || '',
     confidence: am.confidence || 'medium',
   }));
+
+  serverLog('EXTRACTION_RESULT', {
+    source: sourceName,
+    metricsFound: metrics.length,
+    truncated: data.stop_reason === 'max_tokens',
+    costUsd: `$${costUsd.toFixed(4)}`,
+  });
 
   return {
     metrics,
@@ -247,11 +323,23 @@ async function extractChunkWithPageMap(
   originalPageNumbers: number[],
   totalPages: number,
 ): Promise<ExtractionResult> {
+  const startTime = Date.now();
+  const pdfSizeKB = Math.round((base64.length * 3) / 4 / 1024);
   const pageMapStr = originalPageNumbers
     .map((orig, i) => `page ${i + 1} in this PDF = page ${orig} in the original`)
     .join(', ');
 
   const userText = `Extract all financial metrics from this document. This is a filtered subset (${originalPageNumbers.length} pages) of a ${totalPages}-page document. Page mapping: ${pageMapStr}. Report page_reference using the ORIGINAL document page numbers.`;
+
+  serverLog('API_REQUEST', {
+    function: 'extractChunkWithPageMap',
+    source: sourceName,
+    pdfSizeKB,
+    subsetPages: originalPageNumbers.length,
+    totalPages,
+    model: 'claude-sonnet-4-6',
+    maxTokens: 16000,
+  });
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -262,8 +350,8 @@ async function extractChunkWithPageMap(
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 8000,
+      model: 'claude-sonnet-4-6',
+      max_tokens: 16000,
       system: SYSTEM_PROMPT,
       messages: [
         {
@@ -280,31 +368,50 @@ async function extractChunkWithPageMap(
     }),
   });
 
-  if (response.status === 401) {
-    throw new Error('Invalid API key. Please check your Anthropic API key in settings.');
-  }
-  if (response.status === 429) {
-    throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-  }
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '');
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    serverLog('API_ERROR', {
+      function: 'extractChunkWithPageMap',
+      source: sourceName,
+      status: response.status,
+      elapsed: `${elapsed}s`,
+      error: errorBody.slice(0, 500),
+    });
+    if (response.status === 401) {
+      throw new Error('Invalid API key. Please check your Anthropic API key in settings.');
+    }
+    if (response.status === 429) {
+      throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+    }
     throw new Error(`API error (${response.status}): ${errorBody || response.statusText}`);
   }
 
   let data;
   try { data = await response.json(); } catch { throw new Error('API returned invalid JSON response.'); }
 
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  const usage = data.usage || {};
+  const inputTokens = usage.input_tokens || 0;
+  const outputTokens = usage.output_tokens || 0;
+  const costUsd = (inputTokens * 3 + outputTokens * 15) / 1_000_000;
+
+  serverLog('API_RESPONSE', {
+    function: 'extractChunkWithPageMap',
+    source: sourceName,
+    model: data.model || 'unknown',
+    stopReason: data.stop_reason || 'unknown',
+    inputTokens,
+    outputTokens,
+    costUsd: `$${costUsd.toFixed(4)}`,
+    elapsed: `${elapsed}s`,
+    responseChars: data.content?.[0]?.text?.length || 0,
+  });
+
   const textBlock = data.content?.find((block: { type: string }) => block.type === 'text');
   if (!textBlock?.text) throw new Error('No text content in API response');
 
-  let parsed: ExtractedData;
-  try {
-    let jsonStr = textBlock.text.trim();
-    if (jsonStr.startsWith('```')) {
-      jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-    }
-    parsed = JSON.parse(jsonStr);
-  } catch { throw new Error('Failed to parse extraction results.'); }
+  const parsed = parseOrSalvageJson(textBlock.text);
 
   const metrics: Metric[] = (parsed.extracted_metrics || []).map((am) => ({
     date: am.date || '',
@@ -319,6 +426,13 @@ async function extractChunkWithPageMap(
     evidence: am.evidence_text || '',
     confidence: am.confidence || 'medium',
   }));
+
+  serverLog('EXTRACTION_RESULT', {
+    source: sourceName,
+    metricsFound: metrics.length,
+    truncated: data.stop_reason === 'max_tokens',
+    costUsd: `$${costUsd.toFixed(4)}`,
+  });
 
   return {
     metrics,
@@ -392,6 +506,14 @@ function persistLog(message: string, status: string) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, status }),
+  }).catch(() => {});
+}
+
+function serverLog(event: string, data: Record<string, unknown>) {
+  fetch('/api/server-log', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ event, ...data }),
   }).catch(() => {});
 }
 
