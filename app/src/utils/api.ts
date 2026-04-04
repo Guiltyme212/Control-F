@@ -1,8 +1,11 @@
 import { PDFDocument } from 'pdf-lib';
+import { scorePages, selectTopPages } from './pdfFilter';
 import type { Metric, ExtractedData } from '../data/types';
 
 const FIRECRAWL_API_KEY = 'fc-36ddfed03f4645f3af6db877ab2d1574';
-const MAX_PDF_PAGES = 95; // Stay under Claude's 100-page limit
+const MAX_PDF_PAGES = 50; // Stay under Claude's 200K token input limit (dense PDFs ≈ 2K tokens/page)
+const SMART_FILTER_THRESHOLD = 60; // Use smart filtering for PDFs above this page count
+const SMART_FILTER_MAX_PAGES = 30; // Max pages to send after smart filtering
 
 export interface ScrapedPdfLink {
   url: string;
@@ -107,14 +110,22 @@ async function splitPdfIfNeeded(pdfBytes: Uint8Array): Promise<PdfChunk[] | null
   }
 }
 
-async function fetchChunkedPdf(pdfUrl: string): Promise<PdfChunk[]> {
-  const response = await fetch(`/proxy-pdf-chunks?url=${encodeURIComponent(pdfUrl)}`);
+async function getPdfInfo(pdfUrl: string): Promise<{ totalPages: number; chunkCount: number }> {
+  const response = await fetch(`/proxy-pdf-info?url=${encodeURIComponent(pdfUrl)}`);
   if (!response.ok) {
     const body = await response.text().catch(() => '');
     throw new Error(`PDF processing failed: ${body || response.statusText}`);
   }
-  const data: { chunks: PdfChunk[] } = await response.json();
-  return data.chunks;
+  return response.json();
+}
+
+async function fetchPdfChunk(pdfUrl: string, chunkIdx: number): Promise<string> {
+  const response = await fetch(`/proxy-pdf-chunk?url=${encodeURIComponent(pdfUrl)}&chunk=${chunkIdx}`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch chunk ${chunkIdx} (${response.status})`);
+  }
+  const buffer = await response.arrayBuffer();
+  return uint8ToBase64(new Uint8Array(buffer));
 }
 
 /* ------------------------------------------------------------------ */
@@ -229,6 +240,95 @@ async function extractChunk(
   };
 }
 
+async function extractChunkWithPageMap(
+  base64: string,
+  apiKey: string,
+  sourceName: string,
+  originalPageNumbers: number[],
+  totalPages: number,
+): Promise<ExtractionResult> {
+  const pageMapStr = originalPageNumbers
+    .map((orig, i) => `page ${i + 1} in this PDF = page ${orig} in the original`)
+    .join(', ');
+
+  const userText = `Extract all financial metrics from this document. This is a filtered subset (${originalPageNumbers.length} pages) of a ${totalPages}-page document. Page mapping: ${pageMapStr}. Report page_reference using the ORIGINAL document page numbers.`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8000,
+      system: SYSTEM_PROMPT,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'base64', media_type: 'application/pdf', data: base64 },
+            },
+            { type: 'text', text: userText },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (response.status === 401) {
+    throw new Error('Invalid API key. Please check your Anthropic API key in settings.');
+  }
+  if (response.status === 429) {
+    throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+  }
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
+    throw new Error(`API error (${response.status}): ${errorBody || response.statusText}`);
+  }
+
+  let data;
+  try { data = await response.json(); } catch { throw new Error('API returned invalid JSON response.'); }
+
+  const textBlock = data.content?.find((block: { type: string }) => block.type === 'text');
+  if (!textBlock?.text) throw new Error('No text content in API response');
+
+  let parsed: ExtractedData;
+  try {
+    let jsonStr = textBlock.text.trim();
+    if (jsonStr.startsWith('```')) {
+      jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+    }
+    parsed = JSON.parse(jsonStr);
+  } catch { throw new Error('Failed to parse extraction results.'); }
+
+  const metrics: Metric[] = (parsed.extracted_metrics || []).map((am) => ({
+    date: am.date || '',
+    lp: am.lp_name || '',
+    fund: am.fund_name || '',
+    gp: am.gp_manager || '',
+    metric: am.metric_type || '',
+    value: am.value || '',
+    asset_class: am.asset_class || '',
+    source: sourceName,
+    page: am.page_reference ?? 0,
+    evidence: am.evidence_text || '',
+    confidence: am.confidence || 'medium',
+  }));
+
+  return {
+    metrics,
+    signals: parsed.cross_reference_signals || [],
+    metadata: parsed.document_metadata || {
+      source_organization: '', document_type: '', document_date: '', reporting_period: '',
+    },
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /*  Merge results from multiple chunks                                 */
 /* ------------------------------------------------------------------ */
@@ -285,30 +385,89 @@ export async function extractMetricsFromPDF(
   return extractChunk(base64, apiKey, file.name, 0, 0);
 }
 
+export type LogFn = (message: string, status?: 'info' | 'done' | 'error') => void;
+
+function persistLog(message: string, status: string) {
+  fetch('/api/log', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, status }),
+  }).catch(() => {});
+}
+
 export async function extractMetricsFromPdfUrl(
   pdfUrl: string,
-  apiKey: string
+  apiKey: string,
+  log: LogFn = () => {},
 ): Promise<ExtractionResult> {
   const pdfFilename = decodeURIComponent(
     new URL(pdfUrl).pathname.split('/').pop() || 'scraped.pdf'
   );
 
-  // Server-side download + split with qpdf (handles any PDF, any size)
-  const chunks = await fetchChunkedPdf(pdfUrl);
+  // Wrap log to also persist to disk
+  const _log = log;
+  log = (message: string, status: 'info' | 'done' | 'error' = 'info') => {
+    _log(message, status);
+    persistLog(message, status);
+  };
 
-  const results: ExtractionResult[] = [];
-  for (const chunk of chunks) {
-    const result = await extractChunk(
-      chunk.base64,
-      apiKey,
-      pdfFilename,
-      chunk.pageOffset,
-      chunk.totalPages,
-    );
-    results.push(result);
+  // Step 1: Get PDF info (triggers server-side download + cache)
+  log('Downloading and analyzing PDF...');
+  const info = await getPdfInfo(pdfUrl);
+  log(`${info.totalPages} pages detected`, 'done');
+
+  // Step 2: For small PDFs, send directly
+  if (info.totalPages <= SMART_FILTER_THRESHOLD) {
+    log('Small document — sending directly to Claude...');
+    const base64 = await fetchPdfChunk(pdfUrl, 0);
+    log('Extracting financial metrics...', 'info');
+    const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages);
+    log(`Found ${result.metrics.length} metrics`, 'done');
+    return result;
   }
 
-  return mergeResults(results);
+  // Large PDF — smart filtering
+  log('Large document — downloading for analysis...');
+  const fullPdfResponse = await fetch(`/proxy-pdf?url=${encodeURIComponent(pdfUrl)}`);
+  if (!fullPdfResponse.ok) throw new Error(`Failed to download PDF (${fullPdfResponse.status})`);
+  const pdfBytes = new Uint8Array(await fullPdfResponse.arrayBuffer());
+  log(`Downloaded ${(pdfBytes.length / 1024 / 1024).toFixed(1)} MB`, 'done');
+
+  // Score every page for financial keywords
+  log(`Scanning ${info.totalPages} pages for financial content...`);
+  const scores = await scorePages(pdfBytes);
+  const relevantPages = selectTopPages(scores, SMART_FILTER_MAX_PAGES);
+
+  if (relevantPages.length === 0) {
+    log('No financial keywords found — using first chunk as fallback', 'info');
+    const base64 = await fetchPdfChunk(pdfUrl, 0);
+    return extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages);
+  }
+
+  log(`Found ${relevantPages.length} relevant pages (of ${info.totalPages})`, 'done');
+
+  // Create subset PDF
+  log('Building subset PDF with relevant pages...');
+  const pagesParam = relevantPages.join(',');
+  const subsetResponse = await fetch(
+    `/proxy-pdf-subset?url=${encodeURIComponent(pdfUrl)}&pages=${pagesParam}`
+  );
+  if (!subsetResponse.ok) {
+    const body = await subsetResponse.text().catch(() => '');
+    throw new Error(`PDF subset creation failed: ${body || subsetResponse.statusText}`);
+  }
+  const subsetBytes = new Uint8Array(await subsetResponse.arrayBuffer());
+  const subsetBase64 = uint8ToBase64(subsetBytes);
+  log(`Subset: ${relevantPages.length} pages, ${(subsetBytes.length / 1024).toFixed(0)} KB`, 'done');
+
+  // Send to Claude
+  log('Sending to Claude for extraction...');
+  const result = await extractChunkWithPageMap(
+    subsetBase64, apiKey, pdfFilename, relevantPages, info.totalPages,
+  );
+  log(`Extracted ${result.metrics.length} metrics`, 'done');
+
+  return result;
 }
 
 export async function scrapeUrlForPdfs(url: string): Promise<ScrapedPdfLink[]> {

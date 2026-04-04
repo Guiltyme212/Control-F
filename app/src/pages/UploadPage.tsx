@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Upload, FileText, CheckCircle, Search, Settings, X, AlertTriangle, Globe, Loader2, ExternalLink, ChevronDown, ChevronUp } from 'lucide-react';
 import { extractMetricsFromPDF, scrapeUrlForPdfs, extractMetricsFromPdfUrl } from '../utils/api';
-import type { ScrapedPdfLink } from '../utils/api';
+import type { ScrapedPdfLink, LogFn } from '../utils/api';
 import { useToast } from '../hooks/useToast';
 import { ToastContainer } from '../components/Toast';
 import type { Metric } from '../data/types';
@@ -50,7 +50,7 @@ function highlightEvidence(evidence: string, value: string): React.ReactNode {
       const after = evidence.slice(idx + candidate.length);
       return (
         <>
-          {before}<span className="font-bold text-accent-light not-italic">{match}</span>{after}
+          {before}<mark className="font-bold text-white not-italic bg-accent/40 px-1 py-0.5 rounded">{match}</mark>{after}
         </>
       );
     }
@@ -84,6 +84,8 @@ export function UploadPage() {
   const [scrapeError, setScrapeError] = useState('');
   const [scrapeMetrics, setScrapeMetrics] = useState<Metric[]>([]);
   const [scrapeProgress, setScrapeProgress] = useState({ current: 0, total: 0, currentFile: '' });
+  const [extractionLogs, setExtractionLogs] = useState<{ message: string; status: 'info' | 'done' | 'error' }[]>([]);
+  const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let key = sessionStorage.getItem('anthropic_key');
@@ -199,18 +201,24 @@ export function UploadPage() {
     if (selected.length === 0) return;
     setScrapeState('extracting');
     setScrapeMetrics([]);
+    setExtractionLogs([]);
     setScrapeProgress({ current: 0, total: selected.length, currentFile: '' });
     const allMetrics: Metric[] = [];
     let successCount = 0;
     for (let i = 0; i < selected.length; i++) {
       setScrapeProgress({ current: i + 1, total: selected.length, currentFile: selected[i].filename });
+      setExtractionLogs(prev => [...prev, { message: `── ${selected[i].filename} ──`, status: 'info' }]);
+      const log: LogFn = (message, status = 'info') => {
+        setExtractionLogs(prev => [...prev, { message, status }]);
+      };
       try {
-        const result = await extractMetricsFromPdfUrl(selected[i].url, storedKey);
+        const result = await extractMetricsFromPdfUrl(selected[i].url, storedKey, log);
         allMetrics.push(...result.metrics);
         successCount++;
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Extraction failed';
-        showToast(`Failed: ${selected[i].filename} \u2014 ${message}`, 'error');
+        setExtractionLogs(prev => [...prev, { message: `Error: ${message}`, status: 'error' }]);
+        log(`Error: ${message}`, 'error');
       }
     }
     setScrapeMetrics(allMetrics);
@@ -298,7 +306,7 @@ export function UploadPage() {
                 <p className="text-text-primary font-medium mb-1">Drop a PDF here or click to browse</p>
                 <p className="text-sm text-text-muted">Supports pension fund meeting minutes, transaction reports, and performance updates</p>
               </div>
-              {!hasApiKey && <p className="text-xs text-text-muted text-center mt-3">Demo mode \u2014 configure API key in settings for live extraction</p>}
+              {!hasApiKey && <p className="text-xs text-text-muted text-center mt-3">Demo mode — configure API key in settings for live extraction</p>}
             </motion.div>
           )}
 
@@ -358,14 +366,14 @@ export function UploadPage() {
           )}
 
           {state === 'complete' && (
-            <motion.div key="complete" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="max-w-4xl mx-auto">
+            <motion.div key="complete" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="max-w-6xl mx-auto">
               <div className="bg-bg-card border border-border rounded-xl overflow-hidden">
                 <div className="p-4 border-b border-border flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <CheckCircle className="w-4 h-4 text-green" />
                     <span className="text-sm font-medium text-text-primary">Extraction Complete</span>
                     <span className="text-xs text-text-muted">
-                      \u2014 {displayResults ? displayResults.length : sampleResults.length} metrics found
+                      — {displayResults ? displayResults.length : sampleResults.length} metrics found
                       {!displayResults && ' (demo)'}
                     </span>
                   </div>
@@ -423,7 +431,7 @@ export function UploadPage() {
                               >
                                 <td colSpan={6} className="px-6 py-5 bg-bg-tertiary border-b border-border">
                                   <div className="flex gap-8">
-                                    <div className="space-y-2 min-w-56">
+                                    <div className="space-y-2 min-w-72">
                                       <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Metadata</h4>
                                       {[
                                         ['LP', r.lp],
@@ -528,7 +536,7 @@ export function UploadPage() {
               </div>
               {!hasApiKey && (
                 <p className="text-xs text-text-muted text-center mt-3">
-                  Scanning works without API key \u2014 extraction requires one (configure in settings)
+                  Scanning works without API key — extraction requires one (configure in settings)
                 </p>
               )}
             </motion.div>
@@ -588,29 +596,61 @@ export function UploadPage() {
                   </button>
                 </div>
               </div>
-              {!hasApiKey && <p className="text-xs text-yellow text-center mt-3">API key required for extraction \u2014 configure in settings</p>}
+              {!hasApiKey && <p className="text-xs text-yellow text-center mt-3">API key required for extraction — configure in settings</p>}
             </motion.div>
           )}
 
           {scrapeState === 'extracting' && (
-            <motion.div key="scrape-extracting" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="max-w-xl mx-auto flex flex-col items-center py-16">
-              <div className="relative mb-8">
+            <motion.div key="scrape-extracting" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="max-w-xl mx-auto py-8">
+              {/* Header */}
+              <div className="flex items-center gap-3 mb-5">
                 <motion.div
-                  className="w-20 h-20 rounded-2xl border-2 border-accent/30 flex items-center justify-center"
-                  animate={{ borderColor: ['rgba(99,102,241,0.3)', 'rgba(99,102,241,0.7)', 'rgba(99,102,241,0.3)'], boxShadow: ['0 0 20px rgba(99,102,241,0.1)', '0 0 40px rgba(99,102,241,0.25)', '0 0 20px rgba(99,102,241,0.1)'] }}
+                  className="w-10 h-10 rounded-xl border border-accent/30 flex items-center justify-center"
+                  animate={{ borderColor: ['rgba(99,102,241,0.3)', 'rgba(99,102,241,0.7)', 'rgba(99,102,241,0.3)'] }}
                   transition={{ duration: 2, repeat: Infinity }}
                 >
                   <motion.div animate={{ rotate: 360 }} transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}>
-                    <Search className="w-8 h-8 text-accent-light" />
+                    <Search className="w-5 h-5 text-accent-light" />
                   </motion.div>
                 </motion.div>
+                <div>
+                  <p className="text-sm font-medium text-text-primary">
+                    Extracting {scrapeProgress.current} of {scrapeProgress.total}
+                  </p>
+                  <p className="text-xs text-text-muted truncate max-w-sm">{scrapeProgress.currentFile}</p>
+                </div>
               </div>
-              <p className="text-text-secondary mb-2">Extracting {scrapeProgress.current} of {scrapeProgress.total}...</p>
-              <p className="text-xs text-text-muted truncate max-w-md">{scrapeProgress.currentFile}</p>
-              <div className="w-48 h-1.5 bg-bg-hover rounded-full mt-4 overflow-hidden">
+
+              {/* Progress bar */}
+              <div className="w-full h-1 bg-bg-hover rounded-full mb-5 overflow-hidden">
                 <motion.div className="h-full bg-accent rounded-full" initial={{ width: 0 }} animate={{ width: `${(scrapeProgress.current / scrapeProgress.total) * 100}%` }} transition={{ duration: 0.3 }} />
               </div>
-              <p className="text-xs text-text-muted mt-4">Sending to Claude API...</p>
+
+              {/* Live log */}
+              <div
+                ref={logRef}
+                className="bg-bg-card border border-border rounded-xl p-4 max-h-72 overflow-y-auto font-mono text-xs space-y-1.5"
+              >
+                {extractionLogs.map((entry, i) => (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0, x: -5 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className={`flex items-start gap-2 ${
+                      entry.status === 'error' ? 'text-red' :
+                      entry.status === 'done' ? 'text-green' :
+                      'text-text-muted'
+                    }`}
+                  >
+                    <span className="shrink-0 mt-px">
+                      {entry.status === 'done' ? '✓' : entry.status === 'error' ? '✗' : '›'}
+                    </span>
+                    <span>{entry.message}</span>
+                  </motion.div>
+                ))}
+                {/* Auto-scroll anchor */}
+                <div ref={(el) => el?.scrollIntoView({ behavior: 'smooth' })} />
+              </div>
             </motion.div>
           )}
 
@@ -630,13 +670,13 @@ export function UploadPage() {
 
           {scrapeState === 'complete' && (
             scrapeMetrics.length > 0 ? (
-              <motion.div key="scrape-complete" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="max-w-4xl mx-auto">
+              <motion.div key="scrape-complete" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="max-w-6xl mx-auto">
                 <div className="bg-bg-card border border-border rounded-xl overflow-hidden">
                   <div className="p-4 border-b border-border flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <CheckCircle className="w-4 h-4 text-green" />
                       <span className="text-sm font-medium text-text-primary">Extraction Complete</span>
-                      <span className="text-xs text-text-muted">\u2014 {scrapeMetrics.length} metrics from {pdfLinks.filter(l => selectedPdfs.has(l.url)).length} PDF(s)</span>
+                      <span className="text-xs text-text-muted">— {scrapeMetrics.length} metrics from {pdfLinks.filter(l => selectedPdfs.has(l.url)).length} PDF(s)</span>
                     </div>
                     <button onClick={() => { setScrapeState('idle'); setScrapeMetrics([]); setPdfLinks([]); setSelectedPdfs(new Set()); setScrapeUrl(''); }} className="text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer">
                       Start Over
@@ -685,7 +725,7 @@ export function UploadPage() {
                                 >
                                   <td colSpan={7} className="px-6 py-5 bg-bg-tertiary border-b border-border">
                                     <div className="flex gap-8">
-                                      <div className="space-y-2 min-w-56">
+                                      <div className="space-y-2 min-w-72">
                                         <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Metadata</h4>
                                         {[
                                           ['LP', r.lp],
@@ -765,8 +805,8 @@ export function UploadPage() {
               <div className="flex gap-3">
                 <button
                   onClick={() => {
-                    if (apiKey) { sessionStorage.setItem('anthropic_key', apiKey); setIsLiveMode(true); showToast('API key saved \u2014 live extraction enabled', 'success'); }
-                    else { sessionStorage.removeItem('anthropic_key'); setIsLiveMode(false); showToast('API key removed \u2014 demo mode', 'info'); }
+                    if (apiKey) { sessionStorage.setItem('anthropic_key', apiKey); setIsLiveMode(true); showToast('API key saved — live extraction enabled', 'success'); }
+                    else { sessionStorage.removeItem('anthropic_key'); setIsLiveMode(false); showToast('API key removed — demo mode', 'info'); }
                     setShowSettings(false);
                   }}
                   className="flex-1 py-2 rounded-lg bg-accent text-white font-medium text-sm hover:bg-accent-light transition-colors cursor-pointer"
