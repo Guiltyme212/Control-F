@@ -449,12 +449,22 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                 transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
               />
               <div className="flex items-center justify-center gap-3 mb-4 relative">
-                <div className="w-12 h-12 rounded-xl bg-accent flex items-center justify-center font-bold text-white text-xl">
-                  F
+                <div className="w-12 h-12 rounded-xl bg-accent/20 flex items-center justify-center">
+                  <img
+                    alt="F"
+                    src="/vector.svg"
+                    className="w-7 h-7"
+                    style={{ filter: 'brightness(0) invert(1)' }}
+                  />
                 </div>
               </div>
-              <h1 className="text-4xl font-bold text-text-primary tracking-tight mb-2 relative">
-                CONTROL <span className="text-accent-light">F</span>
+              <h1 className="text-4xl font-bold text-text-primary tracking-tight mb-2 relative flex items-center justify-center gap-0.5">
+                Control<span className="inline-flex items-center justify-center rounded-md relative" style={{ height: '1.15em', width: '1.15em', top: '0.04em', position: 'relative', background: 'rgba(255,255,255,0.08)', boxShadow: '0 0 0 1px rgba(255,255,255,0.06)' }}><img
+                  alt="F"
+                  src="/vector.svg"
+                  className="block"
+                  style={{ height: '0.7em', width: '0.7em', filter: 'brightness(0) invert(1)' }}
+                /></span>
               </h1>
               <p className="text-text-secondary text-base font-light relative">
                 AI-powered intelligence across US public pension fund documents

@@ -20,12 +20,14 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
   return (
     <div className="w-60 bg-bg-secondary border-r border-border flex flex-col shrink-0 h-screen sticky top-0">
       <div className="p-5 border-b border-border">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center font-bold text-white text-sm">
-            F
-          </div>
-          <span className="text-lg font-semibold text-text-primary tracking-tight">
-            CONTROL <span className="text-accent-light">F</span>
+        <div className="flex items-center gap-2">
+          <span className="text-lg font-semibold text-text-primary tracking-tight flex items-center">
+            Control<span className="inline-flex items-center justify-center rounded bg-accent/20 relative" style={{ height: '1.1em', width: '1.1em', top: '0.05em', position: 'relative' }}><img
+              alt="F"
+              src="/vector.svg"
+              className="block"
+              style={{ height: '0.7em', width: '0.7em', filter: 'brightness(0) invert(1)' }}
+            /></span><span className="text-text-secondary">.ai</span>
           </span>
           {/* Live indicator */}
           <div className="flex items-center gap-1.5 ml-auto">
@@ -89,8 +91,13 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
       />
 
       <div className="p-4">
-        <div className="text-xs text-text-muted font-light">
-          controlf.ai
+        <div className="text-xs text-text-muted font-light flex items-center">
+          control<span className="inline-flex items-center justify-center rounded bg-white/5 relative" style={{ height: '0.95em', width: '0.95em', top: '0.05em', position: 'relative' }}><img
+            alt="f"
+            src="/vector.svg"
+            className="block"
+            style={{ height: '0.6em', width: '0.6em', filter: 'brightness(0) invert(0.45)' }}
+          /></span>.ai
         </div>
       </div>
     </div>
