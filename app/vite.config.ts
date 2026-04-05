@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import { readFileSync, writeFileSync, mkdtempSync, existsSync, appendFileSync } from 'fs'
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, existsSync, appendFileSync } from 'fs'
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { PDFDocument } from 'pdf-lib'
@@ -103,6 +103,26 @@ export default defineConfig({
                 const line = `${new Date().toISOString().slice(11, 19)} ${prefix} ${message}\n`
                 appendFileSync(LOG_FILE, line)
               } catch { /* ignore bad json */ }
+              res.statusCode = 204
+              res.end()
+            })
+            return
+          }
+
+          // --- /api/save-run-artifact → save structured extraction run artifacts ---
+          if (req.url?.startsWith('/api/save-run-artifact') && req.method === 'POST') {
+            let body = ''
+            req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+            req.on('end', () => {
+              try {
+                const artifact = JSON.parse(body)
+                const runsDir = join(__dirname, 'evals', 'runs')
+                mkdirSync(runsDir, { recursive: true })
+                const ts = new Date().toISOString().replace(/[:.]/g, '-')
+                const id = artifact.id || 'unknown'
+                const filename = `${ts}-${id}.json`
+                writeFileSync(join(runsDir, filename), JSON.stringify(artifact, null, 2))
+              } catch { /* ignore */ }
               res.statusCode = 204
               res.end()
             })

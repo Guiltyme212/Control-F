@@ -10,9 +10,9 @@ import {
   Search,
   Sparkles,
 } from 'lucide-react';
-import { deduplicateMetrics, detectSearchIntents, extractMetricsFromPdfUrl, discoverSourceCandidates, fetchPdfPreviewSubset, scrapeUrlForPdfs, selectBestPdfWithLLM } from '../utils/api';
+import { deduplicateMetrics, detectSearchIntents, extractMetricsFromPdfUrl, discoverSourceCandidates, fetchPdfPreviewSubset, scrapeUrlForPdfs, selectBestPdfWithLLM, saveRunArtifact } from '../utils/api';
 import type { PdfCandidate } from '../utils/api';
-import { extractPdfPreviewText, scorePreviewText } from '../utils/pdfFilter';
+import { extractPdfPreviewText, scorePreviewText, scoreFreshness } from '../utils/pdfFilter';
 import { assessLiveResult, computeCoverageScore, shouldAutoRetry } from '../utils/liveResultAssessment';
 import { useAppContext } from '../context/AppContext';
 import type { Metric, Page, PdfLink, PdfScorecard, SearchIntent, Signal, SourceSearchCandidate } from '../data/types';
@@ -59,6 +59,12 @@ const PDF_PREVIEW_AUTOSELECT_THRESHOLD = 10;
 const PDF_PREVIEW_STRONG_THRESHOLD = 20;
 const SOURCE_PREFLIGHT_CANDIDATE_COUNT = 3;
 const SOURCE_PREFLIGHT_PDF_COUNT = 3;
+
+// Cost guardrails — explicit caps on pipeline breadth
+const MAX_SOURCE_PAGES = 3;
+const MAX_PREVIEW_PDFS = 5;
+const MAX_EXTRACT_PDFS = 2;
+
 const EMPTY_PREVIEW_STATES: Record<string, PdfPreviewState> = {};
 const EMPTY_SOURCE_PROBE_STATES: Record<string, SourceProbeState> = {};
 
@@ -219,6 +225,14 @@ function scorePdfLink(
     }
   }
 
+  // Freshness scoring
+  const freshness = scoreFreshness(pdfLink.filename);
+  if (freshness.score > 0) {
+    score += freshness.score;
+    if (freshness.year) reasons.push(`year:${freshness.year}`);
+    if (freshness.quarter) reasons.push(`Q${freshness.quarter}`);
+  }
+
   return { link: pdfLink, score, reasons };
 }
 
@@ -330,9 +344,14 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
     let cancelled = false;
 
     async function runAutoFlow() {
+      const pipelineStart = Date.now();
       const logs: { message: string; status: 'info' | 'done' | 'error' }[] = [];
+      const timestamp = () => {
+        const elapsed = ((Date.now() - pipelineStart) / 1000).toFixed(1);
+        return `[${elapsed}s]`;
+      };
       const addLog = (msg: string, status: 'info' | 'done' | 'error' = 'info') => {
-        logs.push({ message: msg, status });
+        logs.push({ message: `${timestamp()} ${msg}`, status });
         setLiveTracker((current) =>
           current ? { ...current, extractionLogs: [...logs] } : current,
         );
@@ -368,7 +387,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         }
 
         // Step 2: Scrape top sources for PDFs in parallel
-        const topSources = candidates.slice(0, 3);
+        const topSources = candidates.slice(0, MAX_SOURCE_PAGES);
         addLog(`Scraping ${topSources.length} sources for PDF links...`);
         setLiveTracker((current) =>
           current
@@ -439,7 +458,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
           .sort((a, b) => b.score - a.score);
 
         // Preview-score top candidates in parallel
-        const previewCandidateCount = Math.min(heuristicRanked.length, 5);
+        const previewCandidateCount = Math.min(heuristicRanked.length, MAX_PREVIEW_PDFS);
         addLog(`Previewing top ${previewCandidateCount} PDFs locally...`);
         setLiveTracker((current) =>
           current
@@ -461,7 +480,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                   previewNegativeSignals: pScore.negativeSignals,
                 } as PdfCandidate,
                 filenameScore: fnScore,
-                combinedScore: fnScore + pScore.score,
+                combinedScore: fnScore + pScore.score + scoreFreshness(pdf.filename).score,
                 previewScore: pScore.score,
                 matchedMetrics: pScore.matchedMetricTypes,
                 negativeSignals: pScore.negativeSignals,
@@ -470,7 +489,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
               return {
                 pdf,
                 filenameScore: fnScore,
-                combinedScore: fnScore,
+                combinedScore: fnScore + scoreFreshness(pdf.filename).score,
                 previewScore: 0,
                 matchedMetrics: [] as string[],
                 negativeSignals: [] as string[],
@@ -723,7 +742,11 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         return;
       }
 
-      const selectedPdfLinks = tracker.pdfLinks.filter((link) => tracker.selectedPdfUrls.includes(link.url));
+      const extractionStartTime = Date.now();
+
+      const selectedPdfLinks = tracker.pdfLinks
+        .filter((link) => tracker.selectedPdfUrls.includes(link.url))
+        .slice(0, MAX_EXTRACT_PDFS);
       const allMetrics: Metric[] = [];
       const allSignals: Signal[] = [];
 
@@ -749,11 +772,12 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         );
 
         const log = (message: string, status: 'info' | 'done' | 'error' = 'info') => {
+          const elapsed = ((Date.now() - extractionStartTime) / 1000).toFixed(1);
           setLiveTracker((current) =>
             current
               ? {
                   ...current,
-                  extractionLogs: [...current.extractionLogs, { message, status }],
+                  extractionLogs: [...current.extractionLogs, { message: `[${elapsed}s] ${message}`, status }],
                 }
               : current,
           );
@@ -868,6 +892,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         }
       }
 
+      const extractionDurationSec = Math.round((Date.now() - extractionStartTime) / 1000);
       setLiveTracker((current) =>
         current
           ? {
@@ -875,7 +900,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
               status: 'complete',
               foundMetrics: allMetrics,
               foundSignals: allSignals,
-              message: `Found ${allMetrics.length} metric${allMetrics.length === 1 ? '' : 's'}.`,
+              message: `Found ${allMetrics.length} metric${allMetrics.length === 1 ? '' : 's'} in ${extractionDurationSec}s.`,
               errorMessage: '',
             }
           : current,
@@ -893,6 +918,51 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
           : 'Live search tracker',
         documentCount: totalDocumentsUsed,
         createdAt: new Date().toISOString(),
+      });
+
+      // Save structured run artifact for evaluation
+      const selectedPdf = tracker.pdfLinks.find((link) => tracker.selectedPdfUrls.includes(link.url));
+      const assessment = assessLiveResult({
+        query: liveTrackerQuery,
+        metrics: allMetrics,
+        selectedSource: liveTrackerSelectedSource,
+      });
+      saveRunArtifact({
+        id: `run-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        query: liveTrackerQuery,
+        fund: liveTrackerSelectedSource?.pensionFund ?? '',
+        selected_source: {
+          label: liveTrackerSelectedSource?.label ?? '',
+          document_type: liveTrackerSelectedSource?.documentType ?? '',
+          url: liveTrackerSelectedSource?.url ?? '',
+        },
+        selected_pdf: {
+          filename: selectedPdf?.filename ?? '',
+          source_label: '',
+          preview_score: null,
+        },
+        retry_pdf: null,
+        reviewed_pages: [],
+        total_pages: 0,
+        metrics: allMetrics.map((m) => ({
+          metric: m.metric,
+          asset_class: m.asset_class,
+          value: m.value,
+          page: m.page,
+          evidence: m.evidence,
+          confidence: m.confidence,
+        })),
+        coverage_score: assessment
+          ? (assessment.focusMetricTypes.length > 0
+            ? assessment.matchedFocusMetrics.length / Math.max(assessment.focusMetricTypes.length, 1)
+            : 1)
+          : 0,
+        completeness_label: assessment?.completeness ?? 'unknown',
+        proxy_hits: [],
+        cost_usd: 0,
+        elapsed_sec: 0,
+        documents_used: totalDocumentsUsed,
       });
     }
 
@@ -2163,6 +2233,10 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                       </span>
                     </div>
                   )}
+                  <p className="text-[11px] text-text-muted mt-0.5">
+                    {liveTracker.selectedPdfUrls.length} PDF{liveTracker.selectedPdfUrls.length === 1 ? '' : 's'} reviewed
+                    {liveTracker.foundMetrics.length > 0 && ` \u00B7 ${liveTracker.foundMetrics.length} rows extracted`}
+                  </p>
                 </div>
                 <div className="flex gap-2 shrink-0">
                   {liveTracker.pdfLinks.length > 0 && (

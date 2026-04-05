@@ -4,9 +4,9 @@ React SPA for `controlf.ai` — pension-fund document intelligence. Real extract
 
 ## Current Status (update after major work sessions)
 
-**Phase:** Core pipeline works end-to-end. Focus is quality refinement.
-**Last completed:** Live search-to-extraction bridge, shared activeResults model, smart PDF page filtering, query-aware ranking, match quality assessment, flying tracker animation, Control F.ai branding.
-**Next up:** Auto-retry on weak/partial match (Priority 1). See memory file `project_current_priorities.md` for the full ranked list.
+**Phase:** Pipeline accuracy hardening. Core pipeline + accuracy layer both working.
+**Last completed:** Document-family hard routing, mandatory preview scoring, auto-retry on partial match, asset-class-aware coverage scoring, proxy metric detection, provenance fix, page-window selection, answer summary block, completeness labels, benchmark suite.
+**Next up:** Answer summarization quality, page-window completeness for large docs. See memory file `project_current_priorities.md` for the full ranked list.
 
 ## Core User
 
@@ -25,15 +25,20 @@ Sarah — fund-of-funds analyst. Every decision follows:
 ## The Pipeline
 
 ```
-Query → searchFocus.ts (metric types + keywords)
+Query → searchFocus.ts (metric types + keywords + asset-class hints)
   → sourceRegistry.ts (match to approved fund URLs)
-  → Firecrawl scrapes source page for PDFs
-  → PDFs ranked and user selects
+  → getDocumentFamilyPreferences() hard-routes by query type
+  → discoverSourceCandidates() scores + promotes preferred families
+  → Firecrawl scrapes top 3 source pages for PDFs
+  → Preview scoring: pages 1-3 of top 5 PDFs scored locally
+  → selectBestPdfWithLLM() with enriched preview data
   → PDF proxied via Vite middleware
-  → Small PDF: direct to Claude | Large PDF: page-scored, subsetted, then to Claude
-  → Claude returns Metric[] JSON
-  → liveResultAssessment.ts evaluates match quality
-  → Results table with evidence panel
+  → Small PDF: direct to Claude | Large PDF: page-window scored, subsetted, then to Claude
+  → Claude returns Metric[] JSON (focus instruction narrows extraction)
+  → computeCoverageScore() checks requested vs found (asset-class-aware, proxy-aware)
+  → If partial: auto-retry with next-best PDF, merge + deduplicate
+  → liveResultAssessment.ts evaluates match quality + completeness label
+  → Results with answer summary block + evidence panel
 ```
 
 ## Key Files
@@ -41,13 +46,14 @@ Query → searchFocus.ts (metric types + keywords)
 **Shell:** `App.tsx` (routing, flying tracker), `AppContext.tsx` (state: searchQuery, apiKey, liveTracker, activeResults), `types.ts`
 **Pages:** `SearchPage` `DashboardPage` `ResultsPage` `TrackersPage` `UploadPage` — all in `app/src/pages/`
 **Engine:** `api.ts` `pdfFilter.ts` `searchFocus.ts` `liveResultAssessment.ts` `sourceRegistry.ts` — in `app/src/utils/` and `app/src/data/`
-**Live tracker:** `LiveSearchTrackerCard.tsx` (1400+ lines, full workflow)
+**Live tracker:** `LiveSearchTrackerCard.tsx` (~2200 lines, full workflow with preview scoring + auto-retry)
 **Infrastructure:** `vite.config.ts` (PDF proxy endpoints), `extraction.log` (check FIRST when debugging)
+**Benchmark:** `benchmark.ts` (101 tests — run with `npx tsx benchmark.ts`)
 
 ## Build & Run
 
 From `app/`: `npm run dev` | `npm run build` | `npm run lint`
-No test framework. No real backend — Vite middleware proxies PDFs in dev only.
+No test framework beyond `benchmark.ts`. No real backend — Vite middleware proxies PDFs in dev only.
 
 ## Environment
 
@@ -78,4 +84,5 @@ No test framework. No real backend — Vite middleware proxies PDFs in dev only.
 
 - `1.md` — product master spec
 - `CODEX.md` — condensed guide for Codex agents
+- `TARGET_CUSTOMERS.MD` — target-customer context for product and messaging decisions
 - Memory files — project status, priorities, pipeline architecture, applied learning

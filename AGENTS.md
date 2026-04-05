@@ -9,6 +9,7 @@ Start here, then read:
 - `CLAUDE.md`
 - `CODEX.md`
 - `1.md`
+- `TARGET_CUSTOMERS.MD`
 
 ## Current Phase
 

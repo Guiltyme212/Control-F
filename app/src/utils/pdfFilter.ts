@@ -261,18 +261,111 @@ export function selectTopPages(scores: PageScore[], maxPages: number): number[] 
     .sort((a, b) => b.score - a.score)
     .slice(0, maxPages);
 
-  // Expand each hit into a page window (page-1, page, page+1) to catch
-  // adjacent summary rows, totals, and table continuations
+  if (topHits.length === 0) return [];
+
+  // Group hits into clusters (pages within 3 of each other = same cluster)
+  const sortedHits = [...topHits].sort((a, b) => a.pageNum - b.pageNum);
+  const clusters: Array<{ pages: number[]; maxScore: number }> = [];
+  let currentCluster: { pages: number[]; maxScore: number } = {
+    pages: [sortedHits[0].pageNum],
+    maxScore: sortedHits[0].score,
+  };
+
+  for (let i = 1; i < sortedHits.length; i++) {
+    const hit = sortedHits[i];
+    const lastPage = currentCluster.pages[currentCluster.pages.length - 1];
+    if (hit.pageNum - lastPage <= 3) {
+      // Same cluster
+      currentCluster.pages.push(hit.pageNum);
+      currentCluster.maxScore = Math.max(currentCluster.maxScore, hit.score);
+    } else {
+      // New cluster
+      clusters.push(currentCluster);
+      currentCluster = { pages: [hit.pageNum], maxScore: hit.score };
+    }
+  }
+  clusters.push(currentCluster);
+
+  // Sort clusters by max score (strongest cluster first)
+  clusters.sort((a, b) => b.maxScore - a.maxScore);
+
+  // Keep top 3 clusters max
+  const topClusters = clusters.slice(0, 3);
+
+  // Expand each cluster with neighbor pages
   const windowPages = new Set<number>();
-  for (const hit of topHits) {
-    if (hit.pageNum > 1) windowPages.add(hit.pageNum - 1);
-    windowPages.add(hit.pageNum);
-    if (hit.pageNum < totalPages) windowPages.add(hit.pageNum + 1);
+  for (const cluster of topClusters) {
+    const minPage = Math.min(...cluster.pages);
+    const maxPage = Math.max(...cluster.pages);
+    // For strong clusters (score > 30), widen to ±2 to catch summary/total rows
+    const widen = cluster.maxScore > 30 ? 2 : 1;
+    for (let p = Math.max(1, minPage - widen); p <= Math.min(totalPages, maxPage + widen); p++) {
+      windowPages.add(p);
+    }
   }
 
   // Cap at a reasonable limit (slightly above maxPages to allow windows)
-  const windowMax = Math.min(Math.ceil(maxPages * 1.6), maxPages + 5);
+  const windowMax = Math.min(Math.ceil(maxPages * 1.6), maxPages + 6);
   return [...windowPages]
     .sort((a, b) => a - b)
     .slice(0, windowMax);
+}
+
+/**
+ * Extract date signals from a PDF filename/URL and return a freshness score.
+ * Newer documents score higher.
+ */
+export function scoreFreshness(filename: string): { score: number; year: number | null; quarter: number | null } {
+  const lower = filename.toLowerCase();
+
+  // Try to extract year
+  let year: number | null = null;
+  let quarter: number | null = null;
+
+  // Patterns: 2025, 2024, FY2025, FY25, fy-2025
+  const yearMatch = lower.match(/(?:fy[-\s]?)?(\d{4})/);
+  if (yearMatch) {
+    const y = parseInt(yearMatch[1], 10);
+    if (y >= 2018 && y <= 2030) year = y;
+  }
+  // Fallback: 2-digit year like q3-25, fy25
+  if (!year) {
+    const shortYearMatch = lower.match(/(?:fy|q\d[-\s]?)(\d{2})\b/);
+    if (shortYearMatch) {
+      const y = parseInt(shortYearMatch[1], 10);
+      if (y >= 18 && y <= 30) year = 2000 + y;
+    }
+  }
+
+  // Try to extract quarter
+  const quarterMatch = lower.match(/q([1-4])/i);
+  if (quarterMatch) {
+    quarter = parseInt(quarterMatch[1], 10);
+  }
+
+  // Try month patterns: june, march, september, december, jan, feb, etc.
+  if (!quarter) {
+    if (/(?:jan|feb|mar|q1|first.quarter|march)/i.test(lower)) quarter = 1;
+    else if (/(?:apr|may|jun|q2|second.quarter|june)/i.test(lower)) quarter = 2;
+    else if (/(?:jul|aug|sep|q3|third.quarter|september)/i.test(lower)) quarter = 3;
+    else if (/(?:oct|nov|dec|q4|fourth.quarter|december)/i.test(lower)) quarter = 4;
+  }
+
+  // Compute score
+  const currentYear = new Date().getFullYear();
+  let score = 0;
+
+  if (year) {
+    if (year === currentYear) score += 10;
+    else if (year === currentYear - 1) score += 6;
+    else if (year === currentYear - 2) score += 2;
+    else if (year < currentYear - 2) score -= 5;
+  }
+
+  if (quarter) {
+    // Within same year, later quarters are better
+    score += quarter * 2;
+  }
+
+  return { score, year, quarter };
 }

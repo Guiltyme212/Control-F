@@ -198,7 +198,7 @@ function buildFocusInstruction(focusQuery?: string): string {
     ? ` ONLY extract these metric types: ${focusMetricHints.join(', ')}. Extract one row per asset class or sub-strategy (e.g. Private Equity, Real Estate, Credit, Infrastructure, Total). Do NOT extract individual GP/manager-level rows — only summary-level data.`
     : '';
 
-  return ` User search focus: "${focusQuery}".${metricHintText} Only extract rows that directly answer this search. Skip individual fund/manager details — focus on asset-class and total-portfolio summaries.`;
+  return ` User search focus: "${focusQuery}".${metricHintText} Only extract rows that directly answer this search. Skip individual fund/manager details — focus on asset-class and total-portfolio summaries. IMPORTANT: Your response must be ONLY the JSON object, starting with { — no thinking, no explanation, no preamble.`;
 }
 
 function textIncludesAny(text: string, phrases: string[]): boolean {
@@ -866,6 +866,10 @@ async function extractChunk(
       reporting_period: '',
     },
     truncated: wasTruncated,
+    costUsd,
+    inputTokens,
+    outputTokens,
+    elapsedSec: parseFloat(elapsed),
   };
 }
 
@@ -1004,6 +1008,10 @@ async function extractChunkWithPageMap(
       source_organization: '', document_type: '', document_date: '', reporting_period: '',
     },
     truncated: wasTruncated,
+    costUsd,
+    inputTokens,
+    outputTokens,
+    elapsedSec: parseFloat(elapsed),
   };
 }
 
@@ -1034,6 +1042,10 @@ export interface ExtractionResult {
   signals: { signal_type: string; description: string }[];
   metadata: ExtractedData['document_metadata'];
   truncated?: boolean;
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  elapsedSec?: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1188,6 +1200,14 @@ function serverLog(event: string, data: Record<string, unknown>) {
   }).catch(() => {});
 }
 
+export function saveRunArtifact(artifact: Record<string, unknown>): void {
+  fetch('/api/save-run-artifact', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(artifact),
+  }).catch(() => {});
+}
+
 export async function extractMetricsFromPdfUrl(
   pdfUrl: string,
   apiKey: string,
@@ -1237,7 +1257,7 @@ export async function extractMetricsFromPdfUrl(
     const base64 = await fetchPdfChunk(pdfUrl, 0);
     log('Extracting financial metrics...', 'info');
     const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, effectiveOptions);
-    log(`Found ${result.metrics.length} metrics`, 'done');
+    log(`Found ${result.metrics.length} metrics in ${result.elapsedSec?.toFixed(1) ?? '?'}s — ${result.inputTokens ?? 0} in / ${result.outputTokens ?? 0} out tokens ($${result.costUsd?.toFixed(3) ?? '?'})`, 'done');
     return result;
   }
 
@@ -1291,7 +1311,7 @@ export async function extractMetricsFromPdfUrl(
   const result = await extractChunkWithPageMap(
     subsetBase64, apiKey, pdfFilename, relevantPages, info.totalPages, effectiveOptions,
   );
-  log(`Extracted ${result.metrics.length} metrics`, 'done');
+  log(`Extracted ${result.metrics.length} metrics in ${result.elapsedSec?.toFixed(1) ?? '?'}s — ${result.inputTokens ?? 0} in / ${result.outputTokens ?? 0} out tokens ($${result.costUsd?.toFixed(3) ?? '?'})`, 'done');
 
   return result;
   } catch (error) {

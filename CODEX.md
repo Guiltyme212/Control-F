@@ -46,3 +46,4 @@ VITE_ANTHROPIC_API_KEY (optional)
 
 - `CLAUDE.md` — full engineering guide
 - `1.md` — product master spec
+- `TARGET_CUSTOMERS.MD` — target-customer context
