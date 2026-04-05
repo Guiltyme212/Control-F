@@ -6,10 +6,47 @@ import { useCountUp } from '../hooks/useCountUp';
 import { useToast } from '../hooks/useToast';
 import { ToastContainer } from '../components/Toast';
 import { exportToCSV, exportToJSON } from '../utils/export';
+import { assessLiveResult, isNoActivityValue } from '../utils/liveResultAssessment';
 import type { Metric } from '../data/types';
+import { useAppContext } from '../context/AppContext';
+import { metricMatchesRequestedFocus } from '../utils/searchFocus';
 
-const metricTypes = ['All', 'Commitment', 'Termination', 'Performance', 'Fee Structure', 'AUM', 'NAV', 'Co-Investment', 'Target Fund Size', 'Distribution'];
-const assetClasses = ['All', 'Infrastructure', 'Real Assets', 'Private Equity', 'Credit', 'Public Equities', 'Natural Resources', 'Total Fund', 'Real Estate'];
+const preferredMetricOrder = [
+  'Commitment',
+  'Co-Investment',
+  'IRR',
+  'TVPI',
+  'DPI',
+  'NAV',
+  'AUM',
+  'Asset Allocation',
+  'Target Return',
+  'Target Fund Size',
+  'Management Fee',
+  'Carry',
+  'Distribution',
+  'Capital Call',
+  'Termination',
+  'Performance',
+];
+
+const preferredAssetClassOrder = [
+  'Infrastructure',
+  'Real Assets',
+  'Private Markets',
+  'Private Equity',
+  'Private Credit',
+  'Credit',
+  'Public Equity',
+  'Public Equities',
+  'Public Fixed Income',
+  'Fixed Income',
+  'Real Estate',
+  'Natural Resources',
+  'Total Fund',
+];
+
+const REQUESTED_METRICS_FILTER = '__requested_metrics__';
 
 const metricColors: Record<string, string> = {
   'Commitment': 'bg-green/20 text-green-light',
@@ -19,8 +56,16 @@ const metricColors: Record<string, string> = {
   'Fee Structure': 'bg-yellow/20 text-yellow',
   'AUM': 'bg-purple/20 text-purple',
   'NAV': 'bg-purple/20 text-purple',
+  'IRR': 'bg-cyan/20 text-cyan',
+  'TVPI': 'bg-blue/20 text-blue',
+  'DPI': 'bg-green/20 text-green-light',
+  'Asset Allocation': 'bg-slate-500/20 text-slate-200',
+  'Management Fee': 'bg-yellow/20 text-yellow',
+  'Carry': 'bg-orange/20 text-orange',
   'Target Fund Size': 'bg-orange/20 text-orange',
+  'Target Return': 'bg-blue/20 text-blue',
   'Distribution': 'bg-orange/20 text-orange',
+  'Capital Call': 'bg-red/20 text-red',
 };
 
 const signalIcons: Record<string, React.ElementType> = {
@@ -60,12 +105,31 @@ const signalColors: Record<string, string> = {
 type SortField = 'date' | 'lp' | 'fund' | 'gp' | 'metric' | 'value' | 'asset_class';
 type SortDir = 'asc' | 'desc';
 
+function sortByPreferred(values: string[], preferredOrder: string[]): string[] {
+  const order = new Map(preferredOrder.map((value, index) => [value, index]));
+  return [...values].sort((a, b) => {
+    const aOrder = order.get(a) ?? Number.MAX_SAFE_INTEGER;
+    const bOrder = order.get(b) ?? Number.MAX_SAFE_INTEGER;
+    if (aOrder !== bOrder) {
+      return aOrder - bOrder;
+    }
+    return a.localeCompare(b);
+  });
+}
+
+function formatMetricList(metricTypes: string[]): string {
+  if (metricTypes.length === 0) return '';
+  if (metricTypes.length === 1) return metricTypes[0];
+  if (metricTypes.length === 2) return `${metricTypes[0]} and ${metricTypes[1]}`;
+  return `${metricTypes.slice(0, -1).join(', ')}, and ${metricTypes[metricTypes.length - 1]}`;
+}
+
 function highlightEvidence(evidence: string, value: string): React.ReactNode {
   const candidates: string[] = [];
 
   candidates.push(value);
 
-  const numMatch = value.match(/^[\$\u20AC]?([\d,.]+)/);
+  const numMatch = value.match(/^[$\u20AC]?([\d,.]+)/);
   if (numMatch) {
     const rawNum = numMatch[1].replace(/,/g, '');
     const num = parseFloat(rawNum);
@@ -95,7 +159,11 @@ function highlightEvidence(evidence: string, value: string): React.ReactNode {
 }
 
 export function ResultsPage() {
-  const [metricFilter, setMetricFilter] = useState('All');
+  const { liveTracker, activeResults } = useAppContext();
+  const [metricFilterState, setMetricFilterState] = useState<{ resultId: string | null; value: string }>({
+    resultId: null,
+    value: 'All',
+  });
   const [assetFilter, setAssetFilter] = useState('All');
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const [sortField, setSortField] = useState<SortField>('date');
@@ -110,21 +178,174 @@ export function ResultsPage() {
 
   const exportMenuRef = useRef<HTMLDivElement>(null);
   const savePopoverRef = useRef<HTMLDivElement>(null);
+  const fallbackLiveResults = useMemo(
+    () =>
+      liveTracker?.status === 'complete' && liveTracker.foundMetrics.length
+        ? {
+            id: `fallback-live-${liveTracker.id}`,
+            origin: 'live-search' as const,
+            title: liveTracker.query,
+            query: liveTracker.query,
+            metrics: liveTracker.foundMetrics,
+            signals: liveTracker.foundSignals,
+            selectedSource: liveTracker.selectedSource,
+            sourceSummary: liveTracker.selectedSource
+              ? `${liveTracker.selectedSource.pensionFund} - ${liveTracker.selectedSource.label}`
+              : 'Live search tracker',
+            documentCount: liveTracker.selectedPdfUrls.length || 1,
+            createdAt: liveTracker.createdAt,
+          }
+        : null,
+    [liveTracker],
+  );
+  const currentResults = activeResults ?? fallbackLiveResults;
+  const currentResultsId = currentResults?.id ?? null;
+  const liveAssessment = useMemo(
+    () =>
+      currentResults?.origin === 'live-search'
+        ? assessLiveResult({
+            query: currentResults.query,
+            metrics: currentResults.metrics,
+            selectedSource: currentResults.selectedSource,
+          })
+        : null,
+    [currentResults],
+  );
+  const isRealResult = !!currentResults?.metrics.length;
 
-  const metricsCount = useCountUp(metrics.length, 1200);
-  const commitmentsCount = useCountUp(metrics.filter(m => m.metric === 'Commitment').length, 1200);
-  const signalsCount = useCountUp(signals.length, 1000);
-  const fundsCount = useCountUp(new Set(metrics.map(m => m.lp)).size, 800);
+  const displayMetrics = useMemo(
+    () => (currentResults?.metrics.length ? currentResults.metrics : metrics),
+    [currentResults],
+  );
+  const displaySignals = useMemo(
+    () => (currentResults ? (liveAssessment?.hideSignals ? [] : currentResults.signals) : signals),
+    [currentResults, liveAssessment],
+  );
+  const metricOptions = useMemo(() => {
+    const availableMetrics = Array.from(
+      new Set([
+        ...displayMetrics.map((metric) => metric.metric).filter(Boolean),
+        ...(liveAssessment?.focusMetricTypes ?? []),
+      ]),
+    );
+    const options = ['All', ...sortByPreferred(availableMetrics, preferredMetricOrder)];
+    if (liveAssessment?.focusMetricTypes.length) {
+      options.splice(1, 0, REQUESTED_METRICS_FILTER);
+    }
+    return options;
+  }, [displayMetrics, liveAssessment]);
+  const assetOptions = useMemo(() => {
+    const availableAssetClasses = Array.from(new Set(displayMetrics.map((metric) => metric.asset_class).filter(Boolean)));
+    return ['All', ...sortByPreferred(availableAssetClasses, preferredAssetClassOrder)];
+  }, [displayMetrics]);
+  const documentCount = currentResults?.documentCount ?? new Set(displayMetrics.map((metric) => metric.source)).size;
+  const resultModeLabel = currentResults?.origin === 'upload-file'
+    ? 'Uploaded PDF'
+    : currentResults?.origin === 'upload-scrape'
+      ? 'Scraped URL'
+      : currentResults?.origin === 'live-search'
+        ? 'Live search'
+        : 'Demo';
+
+  const metricsCount = useCountUp(displayMetrics.length, 1200);
+  const actionableCommitmentCount = useMemo(
+    () =>
+      liveAssessment
+        ? liveAssessment.actionableCommitments.length
+        : displayMetrics.filter((metric) => metric.metric === 'Commitment' && !isNoActivityValue(metric.value)).length,
+    [displayMetrics, liveAssessment],
+  );
+  const signalsCount = useCountUp(displaySignals.length, 1000);
+  const fundsCount = useCountUp(new Set(displayMetrics.map(m => m.lp)).size, 800);
+  const performanceMetricCount = liveAssessment?.performanceMetrics.length ?? 0;
+  const matchedFocusMetricTypeCount = liveAssessment
+    ? new Set(liveAssessment.matchedFocusMetrics.map((metric) => metric.metric)).size
+    : 0;
 
   const commitmentTotalStr = useMemo(() => {
-    const total = getCommitmentTotal();
+    const total = currentResults?.metrics.length
+      ? displayMetrics.reduce((sum, metric) => {
+          if (metric.metric !== 'Commitment') return sum;
+          const rawValue = metric.value.replace(/,/g, '');
+          const euroMatch = rawValue.match(/€([\d.]+)/);
+          if (euroMatch) return sum + parseFloat(euroMatch[1]) * 1.08;
+          const usdMatch = rawValue.match(/\$([\d.]+)/);
+          if (usdMatch) return sum + parseFloat(usdMatch[1]);
+          return sum;
+        }, 0)
+      : getCommitmentTotal();
+    if (isRealResult && total === 0) {
+      return liveAssessment?.isWeakMatch ? 'No direct dollar commitments found' : 'No numeric commitment totals found';
+    }
     return total >= 1_000_000_000 ? `~$${(total / 1_000_000_000).toFixed(1)}B total` : `~$${(total / 1_000_000).toFixed(0)}M total`;
-  }, []);
+  }, [currentResults, displayMetrics, isRealResult, liveAssessment]);
+
+  const secondaryStat = useMemo(() => {
+    if (liveAssessment?.intents.includes('performance')) {
+      if (liveAssessment.focusMetricTypes.length > 0) {
+        const matchedFocusMetricLabel = matchedFocusMetricTypeCount > 0
+          ? formatMetricList(Array.from(new Set(liveAssessment.matchedFocusMetrics.map((metric) => metric.metric))))
+          : '';
+        const missingFocusMetricLabel = formatMetricList(liveAssessment.missingFocusMetrics);
+        return {
+          rawCount: matchedFocusMetricTypeCount,
+          label: 'target metrics found',
+          sub: matchedFocusMetricTypeCount > 0
+            ? liveAssessment.missingFocusMetrics.length > 0
+              ? `Matched ${matchedFocusMetricLabel}; missing ${missingFocusMetricLabel}`
+              : `Matched ${matchedFocusMetricLabel}`
+            : `No ${formatMetricList(liveAssessment.focusMetricTypes)} found in this file`,
+        };
+      }
+
+      const surfacedMetricTypes = new Set(liveAssessment.performanceMetrics.map((metric) => metric.metric)).size;
+      return {
+        rawCount: performanceMetricCount,
+        label: 'performance metrics found',
+        sub: performanceMetricCount > 0
+          ? `${surfacedMetricTypes} metric type${surfacedMetricTypes === 1 ? '' : 's'} surfaced`
+          : 'No direct performance metrics found',
+      };
+    }
+
+    return {
+      rawCount: actionableCommitmentCount,
+      label: 'commitments found',
+      sub: commitmentTotalStr,
+    };
+  }, [actionableCommitmentCount, commitmentTotalStr, liveAssessment, matchedFocusMetricTypeCount, performanceMetricCount]);
+  const secondaryCount = useCountUp(secondaryStat.rawCount, 1200);
+
+  const liveAlert = useMemo(() => {
+    if (!currentResults?.metrics.length) return '';
+    if (liveAssessment?.isWeakMatch) {
+      return `${currentResults.selectedSource?.pensionFund || currentResults.title} is a weak match for this query. ${liveAssessment.headline}`;
+    }
+    if (liveAssessment?.focusMetricTypes.length && liveAssessment.missingFocusMetrics.length > 0) {
+      return `${currentResults.selectedSource?.pensionFund || currentResults.title} partially answered this query. Matched ${formatMetricList(Array.from(new Set(liveAssessment.matchedFocusMetrics.map((metric) => metric.metric))))}; still missing ${formatMetricList(liveAssessment.missingFocusMetrics)}.`;
+    }
+    const featuredMetric = liveAssessment?.matchedFocusMetrics[0]
+      ?? liveAssessment?.performanceMetrics[0]
+      ?? currentResults.metrics[0];
+    return `${featuredMetric.lp} ${featuredMetric.metric.toLowerCase()} ${featuredMetric.value} in ${featuredMetric.fund}`;
+  }, [currentResults, liveAssessment]);
+  const defaultMetricFilter = currentResults?.origin === 'live-search' && liveAssessment?.focusMetricTypes.length
+    ? REQUESTED_METRICS_FILTER
+    : 'All';
+  const candidateMetricFilter = metricFilterState.resultId === currentResultsId
+    ? metricFilterState.value
+    : defaultMetricFilter;
+  const selectedMetricFilter = metricOptions.includes(candidateMetricFilter) ? candidateMetricFilter : defaultMetricFilter;
+  const selectedAssetFilter = assetOptions.includes(assetFilter) ? assetFilter : 'All';
 
   const filtered = useMemo(() => {
-    let result = [...metrics];
-    if (metricFilter !== 'All') result = result.filter(m => m.metric === metricFilter);
-    if (assetFilter !== 'All') result = result.filter(m => m.asset_class === assetFilter);
+    let result = [...displayMetrics];
+    if (selectedMetricFilter === REQUESTED_METRICS_FILTER && liveAssessment?.focusMetricTypes.length) {
+      result = result.filter((metric) => metricMatchesRequestedFocus(metric, liveAssessment.focusMetricTypes));
+    } else if (selectedMetricFilter !== 'All') {
+      result = result.filter(m => m.metric === selectedMetricFilter);
+    }
+    if (selectedAssetFilter !== 'All') result = result.filter(m => m.asset_class === selectedAssetFilter);
     result.sort((a, b) => {
       const aVal = a[sortField];
       const bVal = b[sortField];
@@ -132,7 +353,7 @@ export function ResultsPage() {
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return result;
-  }, [metricFilter, assetFilter, sortField, sortDir]);
+  }, [displayMetrics, liveAssessment, selectedAssetFilter, selectedMetricFilter, sortDir, sortField]);
 
   const toggleSort = (field: SortField) => {
     if (sortField === field) {
@@ -181,10 +402,14 @@ export function ResultsPage() {
       metrics: filtered.length,
       last_match: 'Never',
       frequency: saveFrequency,
-      query: `${metricFilter} / ${assetFilter}`,
+      query: `${selectedMetricFilter} / ${selectedAssetFilter}`,
       filters: {
-        metricType: metricFilter !== 'All' ? metricFilter : undefined,
-        assetClass: assetFilter !== 'All' ? assetFilter : undefined,
+        metricType: selectedMetricFilter !== 'All'
+          ? selectedMetricFilter === REQUESTED_METRICS_FILTER
+            ? liveAssessment?.focusMetricTypes.join(', ')
+            : selectedMetricFilter
+          : undefined,
+        assetClass: selectedAssetFilter !== 'All' ? selectedAssetFilter : undefined,
       },
     };
     existing.push(newTracker);
@@ -224,7 +449,15 @@ export function ResultsPage() {
               <Bell className="w-5 h-5 text-accent-light" />
             </motion.div>
             <p className="text-sm text-text-primary flex-1">
-              <span className="font-semibold">Change detected</span> — DCRB total fund value reached new high of <span className="text-accent-light font-semibold">$14.1B</span> (up from $13.2B). Calendar year 2025 net return: 14.1%
+              {liveAlert ? (
+                <>
+                  <span className="font-semibold">{resultModeLabel}</span> - {liveAlert}
+                </>
+              ) : (
+                <>
+                  <span className="font-semibold">Change detected</span> - DCRB total fund value reached new high of <span className="text-accent-light font-semibold">$14.1B</span> (up from $13.2B). Calendar year 2025 net return: 14.1%
+                </>
+              )}
             </p>
             <button
               onClick={() => setAlertDismissed(true)}
@@ -236,13 +469,54 @@ export function ResultsPage() {
         )}
       </AnimatePresence>
 
+      {liveAssessment?.isWeakMatch && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.25 }}
+          className="mb-6 flex items-start gap-3 rounded-xl border border-yellow/25 bg-yellow/5 p-4"
+        >
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-yellow" />
+          <div>
+            <p className="text-sm font-medium text-text-primary">This extraction is probably not the answer you want yet.</p>
+            <p className="mt-1 text-sm text-text-secondary">{liveAssessment.detail}</p>
+          </div>
+        </motion.div>
+      )}
+
+      {!!liveAssessment && !liveAssessment.isWeakMatch && liveAssessment.focusMetricTypes.length > 0 && liveAssessment.missingFocusMetrics.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.25 }}
+          className="mb-6 flex items-start gap-3 rounded-xl border border-accent/20 bg-accent/5 p-4"
+        >
+          <FileText className="mt-0.5 h-5 w-5 shrink-0 text-accent-light" />
+          <div>
+            <p className="text-sm font-medium text-text-primary">This run found part of the answer.</p>
+            <p className="mt-1 text-sm text-text-secondary">
+              Matched {formatMetricList(Array.from(new Set(liveAssessment.matchedFocusMetrics.map((metric) => metric.metric))))}, but still missing {formatMetricList(liveAssessment.missingFocusMetrics)}.
+            </p>
+          </div>
+        </motion.div>
+      )}
+
+      {currentResults && (
+        <div className="mb-6 flex items-center gap-2 rounded-xl border border-border bg-bg-card px-4 py-3 text-sm text-text-secondary">
+          <FileText className="h-4 w-4 text-accent-light" />
+          <span className="font-medium text-text-primary">{resultModeLabel}</span>
+          <span className="text-text-muted">•</span>
+          <span className="truncate">{currentResults.sourceSummary}</span>
+        </div>
+      )}
+
       {/* Summary Stats */}
       <div className="grid grid-cols-4 gap-4 mb-6">
         {[
-          { value: metricsCount, label: 'metrics extracted', sub: `from ${new Set(metrics.map(m => m.source)).size} documents`, icon: FileText },
-          { value: commitmentsCount, label: 'commitments found', sub: commitmentTotalStr, icon: DollarSign },
-          { value: signalsCount, label: 'intelligence signals', sub: 'actionable insights', icon: Zap },
-          { value: fundsCount, label: 'pension funds scanned', sub: 'US public funds', icon: BarChart3 },
+          { value: metricsCount, label: 'metrics extracted', sub: `from ${documentCount} document${documentCount === 1 ? '' : 's'}`, icon: FileText },
+          { value: secondaryCount, label: secondaryStat.label, sub: secondaryStat.sub, icon: DollarSign },
+          { value: signalsCount, label: 'intelligence signals', sub: liveAssessment?.isWeakMatch ? 'hidden until relevance improves' : 'actionable insights', icon: Zap },
+          { value: fundsCount, label: 'pension funds scanned', sub: isRealResult ? `from this ${resultModeLabel.toLowerCase()}` : 'US public funds', icon: BarChart3 },
         ].map((stat, i) => (
           <motion.div
             key={stat.label}
@@ -265,40 +539,50 @@ export function ResultsPage() {
       <div className="mb-6">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-semibold text-text-secondary uppercase tracking-wider">Intelligence Signals</h3>
-          {signals.length > 4 && (
+          {displaySignals.length > 4 && (
             <button
               onClick={() => setShowAllSignals(prev => !prev)}
               className="text-xs text-accent-light hover:text-accent transition-colors cursor-pointer flex items-center gap-1"
             >
-              {showAllSignals ? 'Show fewer' : `Show all ${signals.length} signals`}
+              {showAllSignals ? 'Show fewer' : `Show all ${displaySignals.length} signals`}
               {showAllSignals ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
             </button>
           )}
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <AnimatePresence mode="popLayout">
-            {(showAllSignals ? signals : signals.slice(0, 4)).map((signal, i) => {
-              const Icon = signalIcons[signal.type] || Zap;
-              return (
-                <motion.div
-                  key={signal.type}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  transition={{ delay: 0.3 + i * 0.05 }}
-                  layout
-                  className={`bg-bg-card border border-border rounded-xl p-4 border-l-4 ${signalColors[signal.type] || 'border-l-accent'}`}
-                >
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <Icon className="w-4 h-4 text-text-secondary" />
-                    <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">{signal.type}</span>
-                  </div>
-                  <p className="text-sm text-text-primary leading-relaxed">{signal.description}</p>
-                </motion.div>
-              );
-            })}
-          </AnimatePresence>
-        </div>
+        {displaySignals.length === 0 ? (
+          <div className="rounded-xl border border-border bg-bg-card p-4 text-sm text-text-secondary">
+            {liveAssessment?.isWeakMatch
+              ? 'Signals are hidden for this run because the selected PDF does not look like a strong answer to the search yet.'
+              : currentResults
+                ? 'No cross-reference signals were generated for this extraction yet.'
+                : 'No signals available.'}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <AnimatePresence mode="popLayout">
+              {(showAllSignals ? displaySignals : displaySignals.slice(0, 4)).map((signal, i) => {
+                const Icon = signalIcons[signal.type] || Zap;
+                return (
+                  <motion.div
+                    key={signal.type}
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -20 }}
+                    transition={{ delay: 0.3 + i * 0.05 }}
+                    layout
+                    className={`bg-bg-card border border-border rounded-xl p-4 border-l-4 ${signalColors[signal.type] || 'border-l-accent'}`}
+                  >
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <Icon className="w-4 h-4 text-text-secondary" />
+                      <span className="text-xs font-semibold text-text-secondary uppercase tracking-wide">{signal.type}</span>
+                    </div>
+                    <p className="text-sm text-text-primary leading-relaxed">{signal.description}</p>
+                  </motion.div>
+                );
+              })}
+            </AnimatePresence>
+          </div>
+        )}
       </div>
 
       {/* Filters */}
@@ -306,21 +590,25 @@ export function ResultsPage() {
         <Filter className="w-4 h-4 text-text-muted" />
         <div className="relative">
           <select
-            value={metricFilter}
-            onChange={(e) => setMetricFilter(e.target.value)}
+            value={selectedMetricFilter}
+            onChange={(e) => setMetricFilterState({ resultId: currentResultsId, value: e.target.value })}
             className="bg-bg-card border border-border rounded-lg px-3 py-1.5 text-sm text-text-primary focus:outline-none focus:border-accent/50 appearance-none pr-8 cursor-pointer"
           >
-            {metricTypes.map(t => <option key={t} value={t}>{t === 'All' ? 'All Metrics' : t}</option>)}
+            {metricOptions.map((option) => (
+              <option key={option} value={option}>
+                {option === 'All' ? 'All Metrics' : option === REQUESTED_METRICS_FILTER ? 'Requested Metrics' : option}
+              </option>
+            ))}
           </select>
           <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted pointer-events-none" />
         </div>
         <div className="relative">
           <select
-            value={assetFilter}
+            value={selectedAssetFilter}
             onChange={(e) => setAssetFilter(e.target.value)}
             className="bg-bg-card border border-border rounded-lg px-3 py-1.5 text-sm text-text-primary focus:outline-none focus:border-accent/50 appearance-none pr-8 cursor-pointer"
           >
-            {assetClasses.map(t => <option key={t} value={t}>{t === 'All' ? 'All Asset Classes' : t}</option>)}
+            {assetOptions.map(t => <option key={t} value={t}>{t === 'All' ? 'All Asset Classes' : t}</option>)}
           </select>
           <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted pointer-events-none" />
         </div>
@@ -333,7 +621,7 @@ export function ResultsPage() {
             transition={{ duration: 0.15 }}
             className="text-xs text-text-muted ml-2"
           >
-            Showing {filtered.length} of {metrics.length} metrics
+            Showing {filtered.length} of {displayMetrics.length} metrics
           </motion.span>
         </AnimatePresence>
         <div className="ml-auto flex gap-2">

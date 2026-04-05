@@ -11,7 +11,7 @@ import { TrackersPage } from './pages/TrackersPage';
 import { UploadPage } from './pages/UploadPage';
 import { useAppContext } from './context/AppContext';
 import { metrics } from './data/metrics';
-import type { Page } from './data/types';
+import type { LiveSearchTrackerSeed, Page } from './data/types';
 
 const pageOrder: Page[] = ['search', 'results', 'dashboard', 'trackers', 'upload'];
 
@@ -170,17 +170,26 @@ function App() {
   const [activePage, setActivePage] = useState<Page>('search');
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const { setHasSearched, searchQuery } = useAppContext();
+  const { setHasSearched, setSearchQuery, createLiveTracker } = useAppContext();
   const [flyingCard, setFlyingCard] = useState<string | null>(null);
 
-  const handleSearchComplete = useCallback(() => {
-    setFlyingCard(searchQuery);
+  const handleSearchComplete = useCallback((seed: LiveSearchTrackerSeed) => {
+    setSearchQuery(seed.query);
+    createLiveTracker(seed);
+    setFlyingCard(seed.query);
     setActivePage('dashboard');
     setHasSearched(true);
-  }, [searchQuery, setHasSearched]);
+  }, [createLiveTracker, setHasSearched, setSearchQuery]);
 
   const handleFlyingCardComplete = useCallback(() => {
     setFlyingCard(null);
+  }, []);
+
+  const handleNavigate = useCallback((page: Page) => {
+    setActivePage(page);
+    if (page !== 'dashboard') {
+      setFlyingCard(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -208,22 +217,17 @@ function App() {
       if (e.altKey && e.key >= '1' && e.key <= '5') {
         e.preventDefault();
         const index = parseInt(e.key, 10) - 1;
-        setActivePage(pageOrder[index]);
+        handleNavigate(pageOrder[index]);
       }
     }
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showCommandPalette, showSettings]);
-
-  // Clear flying card if user navigates away from dashboard
-  useEffect(() => {
-    if (activePage !== 'dashboard') setFlyingCard(null);
-  }, [activePage]);
+  }, [handleNavigate, showCommandPalette, showSettings]);
 
   return (
     <div className="flex w-full min-h-screen bg-bg-primary">
-      <Sidebar activePage={activePage} onNavigate={setActivePage} />
+      <Sidebar activePage={activePage} onNavigate={handleNavigate} />
       <main className="flex-1 flex flex-col overflow-hidden">
         <AnimatePresence mode="wait">
           <motion.div
@@ -236,9 +240,9 @@ function App() {
           >
             {activePage === 'search' && <SearchPage onSearchComplete={handleSearchComplete} />}
             {activePage === 'results' && <ResultsPage />}
-            {activePage === 'dashboard' && <DashboardPage />}
-            {activePage === 'trackers' && <TrackersPage onNavigate={setActivePage} />}
-            {activePage === 'upload' && <UploadPage />}
+            {activePage === 'dashboard' && <DashboardPage onNavigate={handleNavigate} />}
+            {activePage === 'trackers' && <TrackersPage onNavigate={handleNavigate} />}
+            {activePage === 'upload' && <UploadPage onNavigate={handleNavigate} />}
           </motion.div>
         </AnimatePresence>
       </main>
@@ -265,12 +269,14 @@ function App() {
 
       {/* Modals */}
       <CommandPalette
+        key={showCommandPalette ? 'command-open' : 'command-closed'}
         isOpen={showCommandPalette}
         onClose={() => setShowCommandPalette(false)}
-        onNavigate={setActivePage}
+        onNavigate={handleNavigate}
         metrics={metrics}
       />
       <SettingsModal
+        key={showSettings ? 'settings-open' : 'settings-closed'}
         isOpen={showSettings}
         onClose={() => setShowSettings(false)}
       />

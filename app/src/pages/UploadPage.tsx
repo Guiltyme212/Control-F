@@ -5,7 +5,8 @@ import { extractMetricsFromPDF, scrapeUrlForPdfs, extractMetricsFromPdfUrl } fro
 import type { ScrapedPdfLink, LogFn } from '../utils/api';
 import { useToast } from '../hooks/useToast';
 import { ToastContainer } from '../components/Toast';
-import type { Metric } from '../data/types';
+import { useAppContext } from '../context/AppContext';
+import type { Metric, Page, Signal } from '../data/types';
 
 type UploadState = 'idle' | 'file-ready' | 'processing' | 'complete' | 'error';
 type Tab = 'upload' | 'scrape';
@@ -30,7 +31,7 @@ const sampleResults: { metric: string; fund: string; value: string; confidence: 
 function highlightEvidence(evidence: string, value: string): React.ReactNode {
   const candidates: string[] = [value];
 
-  const numMatch = value.match(/^[\$\u20AC]?([\d,.]+)/);
+  const numMatch = value.match(/^[$\u20AC]?([\d,.]+)/);
   if (numMatch) {
     const rawNum = numMatch[1].replace(/,/g, '');
     const num = parseFloat(rawNum);
@@ -59,7 +60,18 @@ function highlightEvidence(evidence: string, value: string): React.ReactNode {
   return evidence;
 }
 
-export function UploadPage() {
+interface UploadPageProps {
+  onNavigate: (page: Page) => void;
+}
+
+function mapSignals(signals: { signal_type: string; description: string }[]): Signal[] {
+  return signals.map((signal) => ({
+    type: signal.signal_type,
+    description: signal.description,
+  }));
+}
+
+export function UploadPage({ onNavigate }: UploadPageProps) {
   // Upload tab state
   const [state, setState] = useState<UploadState>('idle');
   const [file, setFile] = useState<{ name: string; size: string } | null>(null);
@@ -67,11 +79,13 @@ export function UploadPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [msgIdx, setMsgIdx] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
-  const [apiKey, setApiKey] = useState('');
+  const [apiKey, setLocalApiKey] = useState('');
   const [extractedMetrics, setExtractedMetrics] = useState<Metric[] | null>(null);
+  const [extractedSignals, setExtractedSignals] = useState<Signal[]>([]);
   const [errorMessage, setErrorMessage] = useState('');
   const [isLiveMode, setIsLiveMode] = useState(false);
   const { toasts, showToast, dismissToast } = useToast();
+  const { setActiveResults, setApiKey: setGlobalApiKey } = useAppContext();
   const abortRef = useRef(false);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
@@ -83,6 +97,7 @@ export function UploadPage() {
   const [selectedPdfs, setSelectedPdfs] = useState<Set<string>>(new Set());
   const [scrapeError, setScrapeError] = useState('');
   const [scrapeMetrics, setScrapeMetrics] = useState<Metric[]>([]);
+  const [scrapeSignals, setScrapeSignals] = useState<Signal[]>([]);
   const [scrapeProgress, setScrapeProgress] = useState({ current: 0, total: 0, currentFile: '' });
   const [extractionLogs, setExtractionLogs] = useState<{ message: string; status: 'info' | 'done' | 'error' }[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
@@ -97,16 +112,49 @@ export function UploadPage() {
       }
     }
     if (key) {
-      setApiKey(key);
+      setLocalApiKey(key);
+      setGlobalApiKey(key);
       setIsLiveMode(true);
     }
-  }, []);
+  }, [setGlobalApiKey]);
+
+  const publishUploadResults = useCallback((metrics: Metric[], signals: Signal[], title: string) => {
+    setActiveResults({
+      id: `results-upload-file-${Date.now()}`,
+      origin: 'upload-file',
+      title,
+      query: `Uploaded PDF: ${title}`,
+      metrics,
+      signals,
+      selectedSource: null,
+      sourceSummary: title,
+      documentCount: 1,
+      createdAt: new Date().toISOString(),
+    });
+  }, [setActiveResults]);
+
+  const publishScrapeResults = useCallback((metrics: Metric[], signals: Signal[], url: string, documentCount: number) => {
+    const hostname = new URL(url).hostname.replace(/^www\./, '');
+    setActiveResults({
+      id: `results-upload-scrape-${Date.now()}`,
+      origin: 'upload-scrape',
+      title: hostname,
+      query: `Scraped URL: ${url}`,
+      metrics,
+      signals,
+      selectedSource: null,
+      sourceSummary: url,
+      documentCount,
+      createdAt: new Date().toISOString(),
+    });
+  }, [setActiveResults]);
 
   const handleFile = useCallback((f: File) => {
     setFile({ name: f.name, size: `${(f.size / 1024 / 1024).toFixed(1)} MB` });
     setRawFile(f);
     setState('file-ready');
     setExtractedMetrics(null);
+    setExtractedSignals([]);
     setErrorMessage('');
   }, []);
 
@@ -127,6 +175,8 @@ export function UploadPage() {
         const result = await extractMetricsFromPDF(rawFile, storedKey);
         if (abortRef.current) return;
         setExtractedMetrics(result.metrics);
+        setExtractedSignals(mapSignals(result.signals));
+        publishUploadResults(result.metrics, mapSignals(result.signals), rawFile.name);
         setState('complete');
         showToast(`Extracted ${result.metrics.length} metrics from ${rawFile.name}`, 'success');
       } catch (err: unknown) {
@@ -172,6 +222,7 @@ export function UploadPage() {
     setPdfLinks([]);
     setSelectedPdfs(new Set());
     setScrapeMetrics([]);
+    setScrapeSignals([]);
     try {
       const links = await scrapeUrlForPdfs(scrapeUrl);
       setPdfLinks(links);
@@ -201,9 +252,11 @@ export function UploadPage() {
     if (selected.length === 0) return;
     setScrapeState('extracting');
     setScrapeMetrics([]);
+    setScrapeSignals([]);
     setExtractionLogs([]);
     setScrapeProgress({ current: 0, total: selected.length, currentFile: '' });
     const allMetrics: Metric[] = [];
+    const allSignals: Signal[] = [];
     let successCount = 0;
     for (let i = 0; i < selected.length; i++) {
       setScrapeProgress({ current: i + 1, total: selected.length, currentFile: selected[i].filename });
@@ -214,6 +267,7 @@ export function UploadPage() {
       try {
         const result = await extractMetricsFromPdfUrl(selected[i].url, storedKey, log);
         allMetrics.push(...result.metrics);
+        allSignals.push(...mapSignals(result.signals));
         successCount++;
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Extraction failed';
@@ -222,8 +276,10 @@ export function UploadPage() {
       }
     }
     setScrapeMetrics(allMetrics);
+    setScrapeSignals(allSignals);
     setScrapeState('complete');
     if (successCount > 0) {
+      publishScrapeResults(allMetrics, allSignals, scrapeUrl, successCount);
       showToast(`Extracted ${allMetrics.length} metrics from ${successCount} PDF(s)`, 'success');
     }
   };
@@ -244,6 +300,16 @@ export function UploadPage() {
   const hasApiKey = isLiveMode || !!sessionStorage.getItem('anthropic_key');
   const displayResults = extractedMetrics || null;
   const displaySample = !extractedMetrics ? sampleResults : null;
+  const openUploadedResults = () => {
+    if (!displayResults || !file) return;
+    publishUploadResults(displayResults, extractedSignals, file.name);
+    onNavigate('results');
+  };
+  const openScrapedResults = () => {
+    if (!scrapeMetrics.length || !scrapeUrl.trim()) return;
+    publishScrapeResults(scrapeMetrics, scrapeSignals, scrapeUrl, pdfLinks.filter((link) => selectedPdfs.has(link.url)).length || 1);
+    onNavigate('results');
+  };
 
   return (
     <div className="flex-1 p-6 overflow-auto">
@@ -377,7 +443,22 @@ export function UploadPage() {
                       {!displayResults && ' (demo)'}
                     </span>
                   </div>
-                  <button onClick={() => { setState('idle'); setFile(null); setRawFile(null); setExtractedMetrics(null); }} className="text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer">Upload Another</button>
+                  <div className="flex items-center gap-3">
+                    {displayResults && (
+                      <button
+                        onClick={openUploadedResults}
+                        className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:bg-accent-light transition-colors cursor-pointer"
+                      >
+                        View In Results
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { setState('idle'); setFile(null); setRawFile(null); setExtractedMetrics(null); setExtractedSignals([]); }}
+                      className="text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+                    >
+                      Upload Another
+                    </button>
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
@@ -519,10 +600,10 @@ export function UploadPage() {
                 <div className="mt-3 flex flex-wrap gap-2">
                   <span className="text-xs text-text-muted">Try:</span>
                   {[
-                    { label: 'ISBI Minutes', url: 'https://www.isbinvestment.com/meeting-minutes/' },
-                    { label: 'ISBI Investments', url: 'https://www.isbinvestment.com/investments/' },
-                    { label: 'SAMCERA Reports', url: 'https://www.samcera.gov/investments-financials/financial-reports' },
-                    { label: 'Minnesota SBI', url: 'https://msbi.us/annual-reports' },
+                    { label: 'PSERS Performance', url: 'https://www.pa.gov/agencies/psers/transparency/investment-program/psers-asset-allocation-and-performance' },
+                    { label: 'Minnesota SBI', url: 'https://msbi.us/comprehensive-performance-report' },
+                    { label: 'NM PERA Performance', url: 'https://www.nmpera.org/investments/performance/' },
+                    { label: 'SAMCERA Performance', url: 'https://www.samcera.gov/investments-financials/investment-performance-reports#private-markets-investment-performance-reports' },
                   ].map(({ label, url }) => (
                     <button
                       key={url}
@@ -678,9 +759,20 @@ export function UploadPage() {
                       <span className="text-sm font-medium text-text-primary">Extraction Complete</span>
                       <span className="text-xs text-text-muted">— {scrapeMetrics.length} metrics from {pdfLinks.filter(l => selectedPdfs.has(l.url)).length} PDF(s)</span>
                     </div>
-                    <button onClick={() => { setScrapeState('idle'); setScrapeMetrics([]); setPdfLinks([]); setSelectedPdfs(new Set()); setScrapeUrl(''); }} className="text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer">
-                      Start Over
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={openScrapedResults}
+                        className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:bg-accent-light transition-colors cursor-pointer"
+                      >
+                        View In Results
+                      </button>
+                      <button
+                        onClick={() => { setScrapeState('idle'); setScrapeMetrics([]); setScrapeSignals([]); setPdfLinks([]); setSelectedPdfs(new Set()); setScrapeUrl(''); }}
+                        className="text-xs text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+                      >
+                        Start Over
+                      </button>
+                    </div>
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
@@ -808,15 +900,15 @@ export function UploadPage() {
               <input
                 type="password"
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => setLocalApiKey(e.target.value)}
                 placeholder="sk-ant-..."
                 className="w-full bg-bg-card border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/50 mb-4"
               />
               <div className="flex gap-3">
                 <button
                   onClick={() => {
-                    if (apiKey) { sessionStorage.setItem('anthropic_key', apiKey); setIsLiveMode(true); showToast('API key saved — live extraction enabled', 'success'); }
-                    else { sessionStorage.removeItem('anthropic_key'); setIsLiveMode(false); showToast('API key removed — demo mode', 'info'); }
+                    if (apiKey) { sessionStorage.setItem('anthropic_key', apiKey); setGlobalApiKey(apiKey); setIsLiveMode(true); showToast('API key saved — live extraction enabled', 'success'); }
+                    else { sessionStorage.removeItem('anthropic_key'); setGlobalApiKey(''); setIsLiveMode(false); showToast('API key removed — demo mode', 'info'); }
                     setShowSettings(false);
                   }}
                   className="flex-1 py-2 rounded-lg bg-accent text-white font-medium text-sm hover:bg-accent-light transition-colors cursor-pointer"
@@ -825,7 +917,7 @@ export function UploadPage() {
                 </button>
                 {apiKey && (
                   <button
-                    onClick={() => { setApiKey(''); sessionStorage.removeItem('anthropic_key'); setIsLiveMode(false); setShowSettings(false); showToast('API key removed', 'info'); }}
+                    onClick={() => { setLocalApiKey(''); sessionStorage.removeItem('anthropic_key'); setGlobalApiKey(''); setIsLiveMode(false); setShowSettings(false); showToast('API key removed', 'info'); }}
                     className="px-4 py-2 rounded-lg bg-bg-hover border border-border text-text-secondary text-sm hover:text-text-primary transition-colors cursor-pointer"
                   >
                     Clear

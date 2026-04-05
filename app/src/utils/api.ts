@@ -1,22 +1,39 @@
 import { PDFDocument } from 'pdf-lib';
 import { scorePages, selectTopPages } from './pdfFilter';
-import type { Metric, ExtractedData } from '../data/types';
+import { getFocusKeywords, getRequestedMetricTypes } from './searchFocus';
+import { sourceRegistry } from '../data/sourceRegistry';
+import type {
+  Metric,
+  ExtractedData,
+  PdfLink,
+  SearchIntent,
+  SourceRegistryEntry,
+  SourceSearchCandidate,
+} from '../data/types';
 
-const FIRECRAWL_API_KEY = 'fc-36ddfed03f4645f3af6db877ab2d1574';
 const MAX_PDF_PAGES = 50; // Stay under Claude's 200K token input limit (dense PDFs ≈ 2K tokens/page)
 const SMART_FILTER_THRESHOLD = 60; // Use smart filtering for PDFs above this page count
+const FOCUSED_FILTER_THRESHOLD = 15; // Use smart filtering for focused queries above this page count
+const FOCUSED_FILTER_MAX_PAGES = 15; // Max pages for focused medium-sized PDFs
+const SPECIFIC_METRIC_FILTER_THRESHOLD = 5; // Tighten filtering earlier for IRR/TVPI/DPI/NAV queries
+const SPECIFIC_METRIC_FILTER_MAX_PAGES = 5; // Keep focused performance extractions small — summary pages only
 const SMART_FILTER_MAX_PAGES = 30; // Max pages to send after smart filtering
+const FIRECRAWL_SEARCH_LIMIT = 3;
+const SOURCE_SEARCH_FANOUT = 6;
+const FIRECRAWL_TIMEOUT_MS = 25000;
+const SCRAPE_TIMEOUT_MS = 30000;
+const PDF_PROXY_TIMEOUT_MS = 45000;
+const CLAUDE_TIMEOUT_MS = 300000;
 
-export interface ScrapedPdfLink {
-  url: string;
-  filename: string;
-}
+export type ScrapedPdfLink = PdfLink;
 
 const SYSTEM_PROMPT = `You are a financial data extraction agent specialized in US public pension fund documents.
 
 You will receive a PDF document from a public pension fund (board meeting minutes, transaction reports, investment memos, performance reports, IPC reports).
 
 Extract ALL financial metrics into structured JSON. Be thorough — extract every single data point.
+
+If the user instruction includes a search focus, prioritize the rows that directly answer that search and avoid flooding the response with broad unrelated tables.
 
 Return ONLY valid JSON (no markdown fences, no explanation, no preamble) with this structure:
 
@@ -39,7 +56,7 @@ Return ONLY valid JSON (no markdown fences, no explanation, no preamble) with th
       "asset_class": "string",
       "strategy": "string",
       "page_reference": "number or null",
-      "evidence_text": "exact sentence from document, max 150 chars",
+      "evidence_text": "key phrase from document, max 80 chars",
       "confidence": "high | medium | low"
     }
   ],
@@ -54,12 +71,477 @@ Return ONLY valid JSON (no markdown fences, no explanation, no preamble) with th
 Rules:
 1. Extract EVERY commitment, termination, allocation, performance metric, fee structure
 2. Fee structures: separate entries for mgmt fee AND carry
-3. Performance: separate entries for IRR, TVPI, DPI per fund
+3. Performance: ALWAYS create separate entries for IRR, TVPI, AND DPI for each fund/asset class. Never skip one because you already extracted the others for that fund.
 4. Always include evidence_text
 5. "No activity" sections: note with value "No activity"
 6. Proposed investments: use Commitment but note "proposed" in evidence
 7. Co-investments: separate entries from main fund commitments
-8. Capture target fund size and target returns`;
+8. Capture target fund size and target returns
+9. When a search focus is provided, extract ALL rows for each requested metric type (e.g. if the user asks for IRR, TVPI, DPI, and NAV — extract every row for all four). Only skip unrelated tables that do not contain ANY of the requested metrics.`;
+
+const INTENT_KEYWORDS: Record<SearchIntent, string[]> = {
+  commitment: [
+    'commitment',
+    'commitments',
+    'investment',
+    'investments',
+    'infrastructure',
+    'real assets',
+    'private equity',
+    'private markets',
+    'approval',
+    'approvals',
+  ],
+  performance: [
+    'performance',
+    'irr',
+    'tvpi',
+    'dpi',
+    'nav',
+    'aum',
+    'return',
+    'returns',
+    'asset allocation',
+  ],
+  board: [
+    'board',
+    'agenda',
+    'minutes',
+    'meeting',
+    'meetings',
+    'board materials',
+    'committee',
+  ],
+  financial: [
+    'financial',
+    'acfr',
+    'annual report',
+    'financial report',
+    'financial overview',
+    'total fund',
+    'asset listing',
+  ],
+  general: [],
+};
+
+interface FirecrawlSearchItem {
+  title?: string;
+  description?: string;
+  url: string;
+}
+
+interface ExtractionOptions {
+  focusQuery?: string;
+}
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(timeoutMessage);
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
+}
+
+function getFirecrawlApiKey(): string {
+  const apiKey = import.meta.env.VITE_FIRECRAWL_API_KEY;
+  if (!apiKey) {
+    throw new Error('Missing Firecrawl API key. Add VITE_FIRECRAWL_API_KEY to app/.env.local.');
+  }
+  return apiKey;
+}
+
+function normalizeForSearch(value: string): string {
+  return value.toLowerCase();
+}
+
+function getHostname(rawUrl: string): string {
+  return new URL(rawUrl).hostname.replace(/^www\./, '');
+}
+
+function collectMatchedKeywords(text: string, keywords: string[]): string[] {
+  const normalized = normalizeForSearch(text);
+  return keywords.filter((keyword) => normalized.includes(keyword)).slice(0, 6);
+}
+
+function buildFocusInstruction(focusQuery?: string): string {
+  if (!focusQuery) return '';
+
+  const normalizedQuery = normalizeForSearch(focusQuery);
+  const focusMetricHints: string[] = [];
+
+  if (normalizedQuery.includes('irr')) focusMetricHints.push('IRR');
+  if (normalizedQuery.includes('tvpi')) focusMetricHints.push('TVPI');
+  if (normalizedQuery.includes('dpi')) focusMetricHints.push('DPI');
+  if (normalizedQuery.includes('nav')) focusMetricHints.push('NAV');
+  if (normalizedQuery.includes('aum')) focusMetricHints.push('AUM');
+
+  const metricHintText = focusMetricHints.length
+    ? ` ONLY extract these metric types: ${focusMetricHints.join(', ')}. Extract one row per asset class or sub-strategy (e.g. Private Equity, Real Estate, Credit, Infrastructure, Total). Do NOT extract individual GP/manager-level rows — only summary-level data.`
+    : '';
+
+  return ` User search focus: "${focusQuery}".${metricHintText} Only extract rows that directly answer this search. Skip individual fund/manager details — focus on asset-class and total-portfolio summaries.`;
+}
+
+function textIncludesAny(text: string, phrases: string[]): boolean {
+  return phrases.some((phrase) => text.includes(normalizeForSearch(phrase)));
+}
+
+function isPdfUrl(url: string): boolean {
+  return /\.pdf(\?|#|$)/i.test(url);
+}
+
+function scoreDocumentTypeFit(
+  documentType: SourceRegistryEntry['documentType'],
+  intents: SearchIntent[],
+): number {
+  let score = 0;
+
+  if (intents.includes('commitment')) {
+    if (documentType === 'meeting') score += 8;
+    if (documentType === 'minutes') score += 7;
+    if (documentType === 'investment') score += 5;
+    if (documentType === 'performance') score -= 3;
+    if (documentType === 'financial') score -= 6;
+    if (documentType === 'general') score -= 8;
+  }
+
+  if (intents.includes('performance')) {
+    if (documentType === 'performance') score += 8;
+    if (documentType === 'investment' || documentType === 'financial') score += 3;
+    if (documentType === 'meeting' || documentType === 'minutes') score -= 4;
+    if (documentType === 'general') score -= 2;
+  }
+
+  if (intents.includes('board')) {
+    if (documentType === 'meeting' || documentType === 'minutes') score += 8;
+    if (documentType === 'investment') score += 2;
+    if (documentType === 'performance') score -= 3;
+    if (documentType === 'financial') score -= 5;
+    if (documentType === 'general') score -= 6;
+  }
+
+  if (intents.includes('financial')) {
+    if (documentType === 'financial') score += 8;
+    if (documentType === 'performance') score += 3;
+    if (documentType === 'investment') score += 1;
+    if (documentType === 'meeting' || documentType === 'minutes') score -= 5;
+    if (documentType === 'general') score -= 4;
+  }
+
+  return score;
+}
+
+function scoreIntentSignals(text: string, intents: SearchIntent[]): number {
+  let score = 0;
+
+  if (intents.includes('commitment')) {
+    if (textIncludesAny(text, ['commitment', 'commitments', 'new investment', 'approvals', 'infrastructure', 'real assets'])) {
+      score += 8;
+    }
+    if (textIncludesAny(text, ['meeting', 'agenda', 'minutes', 'board materials'])) {
+      score += 5;
+    }
+    if (textIncludesAny(text, ['annual report', 'financial report', 'acfr'])) {
+      score -= 8;
+    }
+  }
+
+  if (intents.includes('performance')) {
+    if (textIncludesAny(text, ['performance', 'quarterly', 'private markets', 'asset allocation', 'irr', 'tvpi', 'dpi', 'nav'])) {
+      score += 8;
+    }
+    if (textIncludesAny(text, ['meeting', 'agenda', 'minutes'])) {
+      score -= 5;
+    }
+  }
+
+  if (intents.includes('board')) {
+    if (textIncludesAny(text, ['board', 'agenda', 'minutes', 'meeting', 'committee'])) {
+      score += 8;
+    }
+    if (textIncludesAny(text, ['annual report', 'performance report'])) {
+      score -= 5;
+    }
+  }
+
+  if (intents.includes('financial')) {
+    if (textIncludesAny(text, ['acfr', 'annual report', 'financial report', 'financial overview', 'total fund'])) {
+      score += 8;
+    }
+    if (textIncludesAny(text, ['meeting', 'agenda', 'minutes'])) {
+      score -= 5;
+    }
+  }
+
+  return score;
+}
+
+function scoreRequestedMetricTypeFit(text: string, requestedMetricTypes: string[]): number {
+  let score = 0;
+
+  for (const metricType of requestedMetricTypes) {
+    if (textIncludesAny(text, [metricType])) {
+      score += ['IRR', 'TVPI', 'DPI', 'NAV'].includes(metricType) ? 6 : 3;
+    }
+  }
+
+  return score;
+}
+
+function scoreSourceRiskPatterns(text: string, intents: SearchIntent[], requestedMetricTypes: string[]): number {
+  let score = 0;
+  const wantsSpecificPerformanceMetrics = requestedMetricTypes.some((metricType) =>
+    ['IRR', 'TVPI', 'DPI'].includes(metricType),
+  );
+
+  if (intents.includes('performance')) {
+    if (textIncludesAny(text, ['private markets', 'combined portfolio', 'performance review', 'performance report', 'quarterly performance', 'portfolio report'])) {
+      score += wantsSpecificPerformanceMetrics ? 12 : 6;
+    }
+
+    if (
+      wantsSpecificPerformanceMetrics
+      && textIncludesAny(text, ['financial report', 'financial reports', 'financial statement', 'financial statements', 'annual report', 'acfr', 'net position'])
+    ) {
+      score -= 18;
+    }
+
+    if (
+      wantsSpecificPerformanceMetrics
+      && textIncludesAny(text, ['asset allocation'])
+      && !textIncludesAny(text, ['private markets', 'combined portfolio', 'performance review', 'performance report', 'irr', 'tvpi', 'dpi'])
+    ) {
+      score -= 14;
+    }
+
+    if (wantsSpecificPerformanceMetrics && textIncludesAny(text, ['board meeting', 'agenda', 'minutes', 'committee'])) {
+      score -= 12;
+    }
+  }
+
+  if (intents.includes('commitment') && textIncludesAny(text, ['performance report', 'asset allocation', 'financial report'])) {
+    score -= 6;
+  }
+
+  return score;
+}
+
+function scoreRegistryEntry(entry: SourceRegistryEntry, query: string, intents: SearchIntent[]): number {
+  const normalizedQuery = normalizeForSearch(query);
+  const requestedMetricTypes = getRequestedMetricTypes(query);
+  let score = 0;
+
+  for (const intent of intents) {
+    if (entry.intents.includes(intent)) {
+      score += 5;
+    }
+    score += entry.keywords.filter((keyword) =>
+      INTENT_KEYWORDS[intent].some((intentKeyword) => normalizeForSearch(keyword).includes(normalizeForSearch(intentKeyword))),
+    ).length;
+  }
+
+  score += entry.keywords.filter((keyword) => normalizedQuery.includes(normalizeForSearch(keyword))).length * 2;
+  score += scoreDocumentTypeFit(entry.documentType, intents);
+  score += scoreRequestedMetricTypeFit(
+    normalizeForSearch(`${entry.label} ${entry.keywords.join(' ')} ${entry.notes || ''}`),
+    requestedMetricTypes,
+  );
+  score += scoreSourceRiskPatterns(
+    normalizeForSearch(`${entry.label} ${entry.url} ${entry.keywords.join(' ')} ${entry.notes || ''}`),
+    intents,
+    requestedMetricTypes,
+  );
+
+  return score;
+}
+
+function buildSearchQuery(query: string, entry: SourceRegistryEntry, intents: SearchIntent[]): string {
+  const host = getHostname(entry.url);
+  const intentTerms = intents.flatMap((intent) => INTENT_KEYWORDS[intent]).slice(0, 4).join(' ');
+  return `${query} ${entry.pensionFund} ${entry.label} ${intentTerms} site:${host}`;
+}
+
+async function firecrawlSearch(query: string, entry: SourceRegistryEntry, intents: SearchIntent[]): Promise<FirecrawlSearchItem[]> {
+  const response = await fetchWithTimeout(
+    'https://api.firecrawl.dev/v1/search',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${getFirecrawlApiKey()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query: buildSearchQuery(query, entry, intents),
+        limit: FIRECRAWL_SEARCH_LIMIT,
+        timeout: FIRECRAWL_TIMEOUT_MS,
+      }),
+    },
+    FIRECRAWL_TIMEOUT_MS,
+    'Source search timed out while querying Firecrawl.',
+  );
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
+    throw new Error(`Source search failed (${response.status}): ${errorBody || response.statusText}`);
+  }
+
+  const data = await response.json();
+  if (!data.success) {
+    throw new Error(data.error || 'Firecrawl source search failed');
+  }
+
+  return (data.data || []) as FirecrawlSearchItem[];
+}
+
+function toFallbackCandidate(entry: SourceRegistryEntry, score: number): SourceSearchCandidate {
+  return {
+    id: `fallback-${entry.id}`,
+    registryId: entry.id,
+    pensionFund: entry.pensionFund,
+    label: entry.label,
+    url: entry.url,
+    description: entry.notes || `Approved ${entry.pensionFund} source`,
+    score,
+    matchedKeywords: entry.keywords.slice(0, 4),
+    documentType: entry.documentType,
+  };
+}
+
+function scoreSearchCandidate(
+  entry: SourceRegistryEntry,
+  item: FirecrawlSearchItem,
+  query: string,
+  intents: SearchIntent[],
+  baseScore: number,
+): SourceSearchCandidate {
+  const requestedMetricTypes = getRequestedMetricTypes(query);
+  const title = item.title || entry.label;
+  const description = item.description || entry.notes || `${entry.pensionFund} source match`;
+  const normalizedBundle = normalizeForSearch(`${title} ${description} ${item.url} ${query}`);
+  const matchedKeywords = collectMatchedKeywords(
+    `${title} ${description} ${item.url} ${query} ${entry.keywords.join(' ')}`,
+    [...entry.keywords, ...intents.flatMap((intent) => INTENT_KEYWORDS[intent])],
+  );
+  const directPdfMatch = isPdfUrl(item.url);
+
+  let score = baseScore;
+  if (item.url.startsWith(entry.url)) score += 10;
+  if (getHostname(item.url) === getHostname(entry.url)) score += 4;
+  if (normalizedBundle.includes(normalizeForSearch(entry.label))) score += 4;
+  if (normalizedBundle.includes(normalizeForSearch(entry.pensionFund))) score += 2;
+  if (directPdfMatch) score -= 6;
+  score += matchedKeywords.length * 2;
+  score += scoreIntentSignals(normalizedBundle, intents);
+  score += scoreRequestedMetricTypeFit(normalizedBundle, requestedMetricTypes);
+  score += scoreSourceRiskPatterns(normalizedBundle, intents, requestedMetricTypes);
+
+  return {
+    id: `${entry.id}-${item.url}`,
+    registryId: entry.id,
+    pensionFund: entry.pensionFund,
+    label: entry.label,
+    url: entry.url,
+    description: directPdfMatch ? `${description} Matched through ${title}.` : description,
+    score,
+    matchedKeywords,
+    documentType: entry.documentType,
+  };
+}
+
+export function detectSearchIntents(query: string): SearchIntent[] {
+  const normalizedQuery = normalizeForSearch(query);
+  const requestedMetricTypes = getRequestedMetricTypes(query);
+  const hasPerformanceMetricFocus = requestedMetricTypes.some((metricType) =>
+    ['IRR', 'TVPI', 'DPI', 'NAV', 'AUM', 'Asset Allocation', 'Target Return'].includes(metricType),
+  );
+  const intents: SearchIntent[] = [];
+
+  if (
+    hasPerformanceMetricFocus ||
+    INTENT_KEYWORDS.performance.some((keyword) => normalizedQuery.includes(keyword))
+  ) {
+    intents.push('performance');
+  }
+
+  if (
+    ['commitment', 'commitments', 'investment', 'investments', 'approval', 'approvals', 'co-investment', 'capital call', 'termination', 'terminated']
+      .some((keyword) => normalizedQuery.includes(keyword))
+  ) {
+    intents.push('commitment');
+  }
+
+  if (INTENT_KEYWORDS.board.some((keyword) => normalizedQuery.includes(keyword))) {
+    intents.push('board');
+  }
+
+  if (INTENT_KEYWORDS.financial.some((keyword) => normalizedQuery.includes(keyword))) {
+    intents.push('financial');
+  }
+
+  return intents.length > 0 ? intents : ['general'];
+}
+
+export async function discoverSourceCandidates(
+  query: string,
+  pensionFunds: string[] = [],
+): Promise<SourceSearchCandidate[]> {
+  const intents = detectSearchIntents(query);
+  const pensionFundFilter = new Set(pensionFunds.map((fund) => normalizeForSearch(fund)));
+  const eligibleEntries = sourceRegistry
+    .filter((entry) => pensionFundFilter.size === 0 || pensionFundFilter.has(normalizeForSearch(entry.pensionFund)))
+    .map((entry) => ({ entry, baseScore: scoreRegistryEntry(entry, query, intents) }))
+    .sort((a, b) => b.baseScore - a.baseScore)
+    .slice(0, SOURCE_SEARCH_FANOUT);
+
+  const searchedCandidates = await Promise.all(
+    eligibleEntries.map(async ({ entry, baseScore }) => {
+      try {
+        const results = await firecrawlSearch(query, entry, intents);
+        if (results.length === 0) {
+          return [toFallbackCandidate(entry, baseScore)];
+        }
+        return results.map((item) => scoreSearchCandidate(entry, item, query, intents, baseScore));
+      } catch {
+        return [toFallbackCandidate(entry, baseScore)];
+      }
+    }),
+  );
+
+  const deduped = new Map<string, SourceSearchCandidate>();
+  for (const candidate of searchedCandidates.flat()) {
+    const existing = deduped.get(candidate.url);
+    if (!existing || candidate.score > existing.score) {
+      deduped.set(candidate.url, candidate);
+    }
+  }
+
+  const ranked = [...deduped.values()].sort((a, b) => b.score - a.score);
+  if (ranked.length > 0) {
+    return ranked.slice(0, 6);
+  }
+
+  return sourceRegistry
+    .filter((entry) => pensionFundFilter.size === 0 || pensionFundFilter.has(normalizeForSearch(entry.pensionFund)))
+    .map((entry) => toFallbackCandidate(entry, scoreRegistryEntry(entry, query, intents)))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+}
 
 /* ------------------------------------------------------------------ */
 /*  PDF helpers                                                        */
@@ -111,7 +593,12 @@ async function splitPdfIfNeeded(pdfBytes: Uint8Array): Promise<PdfChunk[] | null
 }
 
 async function getPdfInfo(pdfUrl: string): Promise<{ totalPages: number; chunkCount: number }> {
-  const response = await fetch(`/proxy-pdf-info?url=${encodeURIComponent(pdfUrl)}`);
+  const response = await fetchWithTimeout(
+    `/proxy-pdf-info?url=${encodeURIComponent(pdfUrl)}`,
+    {},
+    PDF_PROXY_TIMEOUT_MS,
+    'PDF analysis timed out while downloading or counting pages. Try a smaller file or a different source page.',
+  );
   if (!response.ok) {
     const body = await response.text().catch(() => '');
     throw new Error(`PDF processing failed: ${body || response.statusText}`);
@@ -120,7 +607,12 @@ async function getPdfInfo(pdfUrl: string): Promise<{ totalPages: number; chunkCo
 }
 
 async function fetchPdfChunk(pdfUrl: string, chunkIdx: number): Promise<string> {
-  const response = await fetch(`/proxy-pdf-chunk?url=${encodeURIComponent(pdfUrl)}&chunk=${chunkIdx}`);
+  const response = await fetchWithTimeout(
+    `/proxy-pdf-chunk?url=${encodeURIComponent(pdfUrl)}&chunk=${chunkIdx}`,
+    {},
+    PDF_PROXY_TIMEOUT_MS,
+    `Timed out while preparing PDF chunk ${chunkIdx + 1}.`,
+  );
   if (!response.ok) {
     throw new Error(`Failed to fetch chunk ${chunkIdx} (${response.status})`);
   }
@@ -177,6 +669,7 @@ async function extractChunk(
   sourceName: string,
   pageOffset: number,
   totalPages: number,
+  options: ExtractionOptions = {},
 ): Promise<ExtractionResult> {
   const startTime = Date.now();
   const pdfSizeKB = Math.round((base64.length * 3) / 4 / 1024);
@@ -184,6 +677,7 @@ async function extractChunk(
   const userText = isChunked
     ? `Extract all financial metrics from this document. This is pages ${pageOffset + 1}–${Math.min(pageOffset + MAX_PDF_PAGES, totalPages)} of a ${totalPages}-page document. Report page_reference relative to the original document (add ${pageOffset} to any page number you see).`
     : 'Extract all financial metrics from this document.';
+  const focusedUserText = `${userText}${buildFocusInstruction(options.focusQuery)}`;
 
   serverLog('API_REQUEST', {
     function: 'extractChunk',
@@ -192,39 +686,44 @@ async function extractChunk(
     totalPages,
     pageOffset,
     model: 'claude-sonnet-4-6',
-    maxTokens: 16000,
+    maxTokens: 32000,
   });
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 16000,
-      system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: base64,
+  const response = await fetchWithTimeout(
+    'https://api.anthropic.com/v1/messages',
+    {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 32000,
+        system: SYSTEM_PROMPT,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: base64,
+                },
               },
-            },
-            { type: 'text', text: userText },
-          ],
-        },
-      ],
-    }),
-  });
+              { type: 'text', text: focusedUserText },
+            ],
+          },
+        ],
+      }),
+    },
+    CLAUDE_TIMEOUT_MS,
+    'Claude extraction timed out before returning a result.',
+  );
 
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '');
@@ -297,10 +796,12 @@ async function extractChunk(
     confidence: am.confidence || 'medium',
   }));
 
+  const wasTruncated = data.stop_reason === 'max_tokens';
+
   serverLog('EXTRACTION_RESULT', {
     source: sourceName,
     metricsFound: metrics.length,
-    truncated: data.stop_reason === 'max_tokens',
+    truncated: wasTruncated,
     costUsd: `$${costUsd.toFixed(4)}`,
   });
 
@@ -313,6 +814,7 @@ async function extractChunk(
       document_date: '',
       reporting_period: '',
     },
+    truncated: wasTruncated,
   };
 }
 
@@ -322,6 +824,7 @@ async function extractChunkWithPageMap(
   sourceName: string,
   originalPageNumbers: number[],
   totalPages: number,
+  options: ExtractionOptions = {},
 ): Promise<ExtractionResult> {
   const startTime = Date.now();
   const pdfSizeKB = Math.round((base64.length * 3) / 4 / 1024);
@@ -330,6 +833,8 @@ async function extractChunkWithPageMap(
     .join(', ');
 
   const userText = `Extract all financial metrics from this document. This is a filtered subset (${originalPageNumbers.length} pages) of a ${totalPages}-page document. Page mapping: ${pageMapStr}. Report page_reference using the ORIGINAL document page numbers.`;
+  const focusedUserText = `${userText}${buildFocusInstruction(options.focusQuery)}`;
+  const focusedMaxTokens = 32000;
 
   serverLog('API_REQUEST', {
     function: 'extractChunkWithPageMap',
@@ -338,35 +843,40 @@ async function extractChunkWithPageMap(
     subsetPages: originalPageNumbers.length,
     totalPages,
     model: 'claude-sonnet-4-6',
-    maxTokens: 16000,
+    maxTokens: focusedMaxTokens,
   });
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-      'anthropic-dangerous-direct-browser-access': 'true',
+  const response = await fetchWithTimeout(
+    'https://api.anthropic.com/v1/messages',
+    {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: focusedMaxTokens,
+        system: SYSTEM_PROMPT,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                source: { type: 'base64', media_type: 'application/pdf', data: base64 },
+              },
+              { type: 'text', text: focusedUserText },
+            ],
+          },
+        ],
+      }),
     },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 16000,
-      system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: { type: 'base64', media_type: 'application/pdf', data: base64 },
-            },
-            { type: 'text', text: userText },
-          ],
-        },
-      ],
-    }),
-  });
+    CLAUDE_TIMEOUT_MS,
+    'Claude extraction timed out before returning a result.',
+  );
 
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '');
@@ -427,10 +937,12 @@ async function extractChunkWithPageMap(
     confidence: am.confidence || 'medium',
   }));
 
+  const wasTruncated = data.stop_reason === 'max_tokens';
+
   serverLog('EXTRACTION_RESULT', {
     source: sourceName,
     metricsFound: metrics.length,
-    truncated: data.stop_reason === 'max_tokens',
+    truncated: wasTruncated,
     costUsd: `$${costUsd.toFixed(4)}`,
   });
 
@@ -440,6 +952,7 @@ async function extractChunkWithPageMap(
     metadata: parsed.document_metadata || {
       source_organization: '', document_type: '', document_date: '', reporting_period: '',
     },
+    truncated: wasTruncated,
   };
 }
 
@@ -457,6 +970,7 @@ function mergeResults(results: ExtractionResult[]): ExtractionResult {
       document_date: '',
       reporting_period: '',
     },
+    truncated: results.some((r) => r.truncated),
   };
 }
 
@@ -468,6 +982,97 @@ export interface ExtractionResult {
   metrics: Metric[];
   signals: { signal_type: string; description: string }[];
   metadata: ExtractedData['document_metadata'];
+  truncated?: boolean;
+}
+
+/* ------------------------------------------------------------------ */
+/*  LLM PDF selector: cheap Claude call to pick the right file         */
+/* ------------------------------------------------------------------ */
+
+export interface PdfCandidate {
+  url: string;
+  filename: string;
+  sourceLabel: string;
+}
+
+export async function selectBestPdfWithLLM(
+  candidates: PdfCandidate[],
+  query: string,
+  apiKey: string,
+): Promise<PdfCandidate[]> {
+  if (candidates.length === 0) return [];
+  if (candidates.length === 1) return candidates;
+
+  const numberedList = candidates
+    .map((c, i) => `${i + 1}. ${c.filename} (from: ${c.sourceLabel})`)
+    .join('\n');
+
+  const requestedMetrics = getRequestedMetricTypes(query);
+  const metricHint = requestedMetrics.length > 0
+    ? `Specifically these metrics: ${requestedMetrics.join(', ')}.`
+    : '';
+
+  const prompt = `You are helping a pension fund analyst find specific financial metrics in PDF documents.
+
+The analyst is looking for: ${query}
+${metricHint}
+
+Here are PDF files found on pension fund websites:
+
+${numberedList}
+
+Which 1-2 files most likely contain the requested metrics?
+
+Rules:
+- Prefer disclosure reports, portfolio reports, performance reviews, combined portfolio reports
+- Avoid financial statements, balance sheets, ACFR, agendas, minutes
+- "Quarterly statement" is usually a balance sheet (bad). "Quarterly disclosure report" is usually performance data (good).
+- More recent files are better
+- If unsure between two, pick the one more likely to have the specific metrics
+
+Return ONLY a JSON array of file numbers, e.g. [3] or [3, 7]. Nothing else.`;
+
+  try {
+    const response = await fetchWithTimeout(
+      'https://api.anthropic.com/v1/messages',
+      {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 50,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      },
+      15000,
+      'PDF selection timed out.',
+    );
+
+    if (!response.ok) {
+      // Fall back to heuristic selection
+      return candidates.slice(0, 2);
+    }
+
+    const data = await response.json();
+    const text = data.content?.[0]?.text?.trim() || '';
+    const parsed = JSON.parse(text);
+
+    if (!Array.isArray(parsed)) return candidates.slice(0, 2);
+
+    const selected = parsed
+      .filter((n: unknown) => typeof n === 'number' && n >= 1 && n <= candidates.length)
+      .map((n: number) => candidates[n - 1]);
+
+    return selected.length > 0 ? selected : candidates.slice(0, 2);
+  } catch {
+    // Any failure — fall back to first 2 by heuristic rank
+    return candidates.slice(0, 2);
+  }
 }
 
 export async function extractMetricsFromPDF(
@@ -521,6 +1126,7 @@ export async function extractMetricsFromPdfUrl(
   pdfUrl: string,
   apiKey: string,
   log: LogFn = () => {},
+  options: ExtractionOptions = {},
 ): Promise<ExtractionResult> {
   const pdfFilename = decodeURIComponent(
     new URL(pdfUrl).pathname.split('/').pop() || 'scraped.pdf'
@@ -533,37 +1139,63 @@ export async function extractMetricsFromPdfUrl(
     persistLog(message, status);
   };
 
+  try {
+
   // Step 1: Get PDF info (triggers server-side download + cache)
   log('Downloading and analyzing PDF...');
   const info = await getPdfInfo(pdfUrl);
   log(`${info.totalPages} pages detected`, 'done');
 
-  // Step 2: For small PDFs, send directly
-  if (info.totalPages <= SMART_FILTER_THRESHOLD) {
+  // Decide whether to use smart filtering
+  const hasFocusQuery = !!options.focusQuery;
+  const requestedMetricTypes = hasFocusQuery ? getRequestedMetricTypes(options.focusQuery!) : [];
+  const hasSpecificMetricFocus = requestedMetricTypes.some((metricType) =>
+    ['IRR', 'TVPI', 'DPI', 'NAV'].includes(metricType),
+  );
+  const shouldSmartFilter =
+    info.totalPages > SMART_FILTER_THRESHOLD ||
+    (hasFocusQuery && info.totalPages > FOCUSED_FILTER_THRESHOLD) ||
+    (hasSpecificMetricFocus && info.totalPages > SPECIFIC_METRIC_FILTER_THRESHOLD);
+  const maxFilteredPages = hasSpecificMetricFocus
+    ? SPECIFIC_METRIC_FILTER_MAX_PAGES
+    : info.totalPages > SMART_FILTER_THRESHOLD
+    ? SMART_FILTER_MAX_PAGES
+    : FOCUSED_FILTER_MAX_PAGES;
+
+  // Step 2: For small PDFs (or medium without focus), send directly
+  if (!shouldSmartFilter) {
     log('Small document — sending directly to Claude...');
     const base64 = await fetchPdfChunk(pdfUrl, 0);
     log('Extracting financial metrics...', 'info');
-    const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages);
+    const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, options);
     log(`Found ${result.metrics.length} metrics`, 'done');
     return result;
   }
 
-  // Large PDF — smart filtering
-  log('Large document — downloading for analysis...');
-  const fullPdfResponse = await fetch(`/proxy-pdf?url=${encodeURIComponent(pdfUrl)}`);
+  // Smart filtering — score pages and send only the most relevant
+  log(`${info.totalPages} pages — scanning for the most relevant pages...`);
+  const fullPdfResponse = await fetchWithTimeout(
+    `/proxy-pdf?url=${encodeURIComponent(pdfUrl)}`,
+    {},
+    PDF_PROXY_TIMEOUT_MS,
+    'Timed out while downloading the full PDF for analysis.',
+  );
   if (!fullPdfResponse.ok) throw new Error(`Failed to download PDF (${fullPdfResponse.status})`);
   const pdfBytes = new Uint8Array(await fullPdfResponse.arrayBuffer());
   log(`Downloaded ${(pdfBytes.length / 1024 / 1024).toFixed(1)} MB`, 'done');
 
   // Score every page for financial keywords
   log(`Scanning ${info.totalPages} pages for financial content...`);
-  const scores = await scorePages(pdfBytes);
-  const relevantPages = selectTopPages(scores, SMART_FILTER_MAX_PAGES);
+  const focusKeywordsForScoring = hasFocusQuery
+    ? getFocusKeywords(options.focusQuery!, detectSearchIntents(options.focusQuery!))
+    : [];
+  const scores = await scorePages(pdfBytes, focusKeywordsForScoring);
+  const relevantPages = selectTopPages(scores, maxFilteredPages);
 
   if (relevantPages.length === 0) {
     log('No financial keywords found — using first chunk as fallback', 'info');
     const base64 = await fetchPdfChunk(pdfUrl, 0);
-    return extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages);
+    return extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, options);
   }
 
   log(`Found ${relevantPages.length} relevant pages (of ${info.totalPages})`, 'done');
@@ -571,8 +1203,11 @@ export async function extractMetricsFromPdfUrl(
   // Create subset PDF
   log('Building subset PDF with relevant pages...');
   const pagesParam = relevantPages.join(',');
-  const subsetResponse = await fetch(
-    `/proxy-pdf-subset?url=${encodeURIComponent(pdfUrl)}&pages=${pagesParam}`
+  const subsetResponse = await fetchWithTimeout(
+    `/proxy-pdf-subset?url=${encodeURIComponent(pdfUrl)}&pages=${pagesParam}`,
+    {},
+    PDF_PROXY_TIMEOUT_MS,
+    'Timed out while preparing the filtered PDF subset.',
   );
   if (!subsetResponse.ok) {
     const body = await subsetResponse.text().catch(() => '');
@@ -585,22 +1220,52 @@ export async function extractMetricsFromPdfUrl(
   // Send to Claude
   log('Sending to Claude for extraction...');
   const result = await extractChunkWithPageMap(
-    subsetBase64, apiKey, pdfFilename, relevantPages, info.totalPages,
+    subsetBase64, apiKey, pdfFilename, relevantPages, info.totalPages, options,
   );
   log(`Extracted ${result.metrics.length} metrics`, 'done');
 
   return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'PDF extraction failed.';
+    log(message, 'error');
+    throw error instanceof Error ? error : new Error(message);
+  }
+}
+
+export async function fetchPdfPreviewSubset(
+  pdfUrl: string,
+  pages: number[] = [1, 2],
+): Promise<Uint8Array> {
+  const pagesParam = pages.join(',');
+  const response = await fetchWithTimeout(
+    `/proxy-pdf-subset?url=${encodeURIComponent(pdfUrl)}&pages=${pagesParam}`,
+    {},
+    PDF_PROXY_TIMEOUT_MS,
+    'Timed out while preparing the PDF preview subset.',
+  );
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`PDF preview fetch failed: ${body || response.statusText}`);
+  }
+
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 export async function scrapeUrlForPdfs(url: string): Promise<ScrapedPdfLink[]> {
-  const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${FIRECRAWL_API_KEY}`,
-      'Content-Type': 'application/json',
+  const response = await fetchWithTimeout(
+    'https://api.firecrawl.dev/v1/scrape',
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${getFirecrawlApiKey()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ url, formats: ['links', 'rawHtml'] }),
     },
-    body: JSON.stringify({ url, formats: ['links', 'rawHtml'] }),
-  });
+    SCRAPE_TIMEOUT_MS,
+    'Source page scan timed out while looking for PDFs.',
+  );
 
   if (!response.ok) {
     const errorBody = await response.text().catch(() => '');

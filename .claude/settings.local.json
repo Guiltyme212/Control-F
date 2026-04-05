@@ -6,7 +6,20 @@
       "Bash(grep -E \"\\\\.\\(ts|tsx\\)$\")",
       "Bash(xargs wc:*)",
       "Bash(npm run:*)",
-      "Bash(npx vite:*)"
+      "Bash(npx vite:*)",
+      "Bash(npx playwright:*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173)",
+      "Bash(node test-walkthrough.js)",
+      "Bash(node test-walkthrough.cjs)",
+      "Bash(node edge-test.cjs)",
+      "Bash(node test-screenshots/ux-audit.cjs)",
+      "WebSearch",
+      "Bash(node test-scoring-heuristics.cjs)",
+      "Bash(start http://localhost:5175)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5174)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5175)",
+      "Bash(node test-pipeline-e2e.cjs)",
+      "Bash(curl -s http://localhost:5173)"
     ]
   }
 }

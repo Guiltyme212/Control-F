@@ -1,14 +1,14 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Zap, Sparkles, Bell, Activity, X, Plus, ChevronRight } from 'lucide-react';
-import { useAppContext } from '../context/AppContext';
-import { DataGridHero } from '@/components/ui/data-grid-hero';
+import { GradientDots } from '@/components/ui/gradient-dots';
+import type { LiveSearchTrackerSeed } from '../data/types';
 
 const presets = [
-  "New LP commitments to infrastructure funds",
-  "Manager terminations and replacements",
-  "Private equity fund performance (IRR/TVPI/DPI)",
-  "New funds registered in the SEC",
+  'PSERS private markets IRR, TVPI, DPI, and NAV',
+  'Minnesota SBI quarterly private markets performance',
+  'SAMCERA private equity performance review',
+  'PSERS new fund commitments and board approvals',
 ];
 
 const processingMessages = [
@@ -34,40 +34,49 @@ type Phase = 'idle' | 'refine' | 'lifting' | 'thinking' | 'morphing';
 /*  Refine constants                                                   */
 /* ------------------------------------------------------------------ */
 
-const ALL_ENTITIES = ['NY State CRF', 'CalPERS', 'CalSTRS', 'SBCERA', 'NJ DOI', 'Minnesota SBI', 'NM PERA', 'PSERS', 'SEC EDGAR'];
+const ALL_ENTITIES = ['PSERS', 'Minnesota SBI', 'SAMCERA'];
 const ALL_METRICS = ['Commitments', 'NAV', 'IRR', 'TVPI', 'DPI', 'Terminations', 'Manager Changes', 'AUM', 'Fund Registrations'];
 const ALL_ASSET_CLASSES = ['Infrastructure', 'Private Equity', 'Credit', 'Real Assets', 'Natural Resources', 'Real Estate', 'Public Equities'];
 const FREQUENCIES = ['Daily', 'Weekly', 'Monthly'] as const;
 type Frequency = (typeof FREQUENCIES)[number];
 
 const PRESET_CONFIGS: Record<string, { entities: string[]; metrics: string[]; assetClasses: string[] }> = {
-  "New LP commitments to infrastructure funds": {
-    entities: ['NY State CRF', 'CalPERS', 'CalSTRS', 'SBCERA'],
-    metrics: ['Commitments', 'NAV'],
-    assetClasses: ['Infrastructure'],
+  'PSERS private markets IRR, TVPI, DPI, and NAV': {
+    entities: ['PSERS'],
+    metrics: ['IRR', 'TVPI', 'DPI', 'NAV'],
+    assetClasses: ['Private Equity', 'Infrastructure', 'Credit', 'Real Estate'],
   },
-  "Manager terminations and replacements": {
-    entities: ['NY State CRF', 'CalPERS', 'NJ DOI', 'CalSTRS'],
-    metrics: ['Terminations', 'Manager Changes'],
-    assetClasses: ['Public Equities', 'Private Equity'],
+  'Minnesota SBI quarterly private markets performance': {
+    entities: ['Minnesota SBI'],
+    metrics: ['AUM', 'NAV', 'IRR', 'TVPI', 'DPI'],
+    assetClasses: ['Private Equity', 'Infrastructure', 'Credit', 'Real Assets'],
   },
-  "Private equity fund performance (IRR/TVPI/DPI)": {
-    entities: ['CalPERS', 'CalSTRS', 'NY State CRF'],
+  'SAMCERA private equity performance review': {
+    entities: ['SAMCERA'],
     metrics: ['IRR', 'TVPI', 'DPI'],
     assetClasses: ['Private Equity'],
   },
-  "New funds registered in the SEC": {
-    entities: ['SEC EDGAR', 'NY State CRF', 'CalPERS'],
-    metrics: ['Fund Registrations', 'AUM'],
-    assetClasses: ['Private Equity', 'Infrastructure', 'Credit'],
+  'PSERS new fund commitments and board approvals': {
+    entities: ['PSERS'],
+    metrics: ['Commitments'],
+    assetClasses: ['Infrastructure', 'Private Equity'],
   },
 };
 
 const DEFAULT_CONFIG = {
-  entities: ['NY State CRF', 'CalPERS', 'CalSTRS', 'SBCERA'],
-  metrics: ['Commitments', 'NAV'],
-  assetClasses: ['Infrastructure', 'Private Equity'],
+  entities: ['PSERS', 'Minnesota SBI', 'SAMCERA'],
+  metrics: ['Commitments', 'NAV', 'IRR'],
+  assetClasses: ['Infrastructure', 'Private Equity', 'Real Assets'],
 };
+
+const AMBIENT_PARTICLES = [
+  { angle: 8, delay: 0, duration: 3.2, distance: 70, size: 2.2 },
+  { angle: 64, delay: 0.7, duration: 3.8, distance: 92, size: 2.1 },
+  { angle: 126, delay: 1.4, duration: 4.1, distance: 78, size: 1.8 },
+  { angle: 186, delay: 2.1, duration: 3.5, distance: 84, size: 2.4 },
+  { angle: 248, delay: 2.8, duration: 4.3, distance: 98, size: 1.7 },
+  { angle: 308, delay: 3.5, duration: 3.7, distance: 88, size: 2.0 },
+] as const;
 
 /* ------------------------------------------------------------------ */
 /*  Chip Section                                                       */
@@ -138,7 +147,7 @@ function ChipSection({ label, items, allItems, onAdd, onRemove }: ChipSectionPro
 }
 
 interface SearchPageProps {
-  onSearchComplete: () => void;
+  onSearchComplete: (seed: LiveSearchTrackerSeed) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -221,18 +230,9 @@ function OrbitalRing({ progress }: { progress: number }) {
 /*  Ambient particles that drift outward from center                   */
 /* ------------------------------------------------------------------ */
 function AmbientParticles() {
-  const particles = useMemo(() =>
-    Array.from({ length: 6 }, (_, i) => ({
-      angle: (i / 6) * 360 + Math.random() * 30,
-      delay: i * 0.7,
-      duration: 3 + Math.random() * 2,
-      distance: 60 + Math.random() * 40,
-      size: 1.5 + Math.random() * 1.5,
-    })), []);
-
   return (
     <>
-      {particles.map((p, i) => {
+      {AMBIENT_PARTICLES.map((p, i) => {
         const rad = (p.angle * Math.PI) / 180;
         return (
           <motion.div
@@ -271,7 +271,6 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [messageIndex, setMessageIndex] = useState(0);
   const [progress, setProgress] = useState(0);
-  const { setSearchQuery } = useAppContext();
 
   // Refine state
   const [refineEntities, setRefineEntities] = useState<string[]>(DEFAULT_CONFIG.entities);
@@ -292,9 +291,8 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
   }, [query]);
 
   const handleStartTracking = useCallback(() => {
-    setSearchQuery(query);
     setPhase('lifting');
-  }, [query, setSearchQuery]);
+  }, []);
 
   const handleBackToIdle = useCallback(() => {
     setPhase('idle');
@@ -310,11 +308,29 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
     } else if (phase === 'thinking') {
       timer = setTimeout(() => setPhase('morphing'), PHASE_TIMINGS.thinking);
     } else if (phase === 'morphing') {
-      timer = setTimeout(onSearchComplete, PHASE_TIMINGS.morphing + PHASE_TIMINGS.departure);
+      timer = setTimeout(
+        () =>
+          onSearchComplete({
+            query,
+            pensionFunds: refineEntities,
+            metrics: refineMetrics,
+            assetClasses: refineAssetClasses,
+            frequency: refineFrequency,
+          }),
+        PHASE_TIMINGS.morphing + PHASE_TIMINGS.departure,
+      );
     }
 
     return () => clearTimeout(timer);
-  }, [phase, onSearchComplete]);
+  }, [
+    phase,
+    onSearchComplete,
+    query,
+    refineAssetClasses,
+    refineEntities,
+    refineFrequency,
+    refineMetrics,
+  ]);
 
   // Message cycling during thinking
   useEffect(() => {
@@ -408,19 +424,10 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
             className="absolute inset-0 z-0 pointer-events-none"
             exit={{ opacity: 0, transition: { duration: 0.35 } }}
           >
-            <DataGridHero
-              rows={39}
-              cols={19}
-              spacing={4}
-              duration={10}
-              color="var(--color-accent)"
-              animationType="random"
-              pulseEffect={true}
-              mouseGlow={false}
-              opacityMin={0.16}
-              opacityMax={0.8}
-              background="transparent"
-              className="w-full h-full opacity-80"
+            <GradientDots
+              duration={20}
+              backgroundColor="var(--color-bg-primary)"
+              className="w-full h-full opacity-60"
             />
           </motion.div>
         )}
@@ -440,16 +447,8 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
               transition={{ duration: 0.5 }}
               className="text-center mb-10 relative"
             >
-              <motion.div
-                className="absolute -inset-16 rounded-full pointer-events-none"
-                style={{
-                  background: 'radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 70%)',
-                }}
-                animate={{ opacity: [0.4, 0.8, 0.4], scale: [0.95, 1.05, 0.95] }}
-                transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
-              />
               <div className="flex items-center justify-center gap-3 mb-4 relative">
-                <div className="w-12 h-12 rounded-xl bg-accent/20 flex items-center justify-center">
+                <div className="w-12 h-12 rounded-xl border border-accent/25 flex items-center justify-center">
                   <img
                     alt="F"
                     src="/vector.svg"
@@ -459,7 +458,7 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                 </div>
               </div>
               <h1 className="text-4xl font-bold text-text-primary tracking-tight mb-2 relative flex items-center justify-center gap-0.5">
-                Control<span className="inline-flex items-center justify-center rounded-md relative" style={{ height: '1.15em', width: '1.15em', top: '0.04em', position: 'relative', background: 'rgba(255,255,255,0.08)', boxShadow: '0 0 0 1px rgba(255,255,255,0.06)' }}><img
+                Control<span className="inline-flex items-center justify-center rounded-md relative" style={{ height: '1.15em', width: '1.15em', top: '0.04em', position: 'relative', border: '1px solid rgba(255,255,255,0.1)' }}><img
                   alt="F"
                   src="/vector.svg"
                   className="block"
@@ -467,7 +466,7 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                 /></span>
               </h1>
               <p className="text-text-secondary text-base font-light relative">
-                AI-powered intelligence across US public pension fund documents
+                Pension fund data, extracted from the source
               </p>
             </motion.div>
 
@@ -484,7 +483,7 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && query.trim()) handleSearch();
                       }}
-                      placeholder="What do you want to track?"
+                      placeholder="Search any fund, metric, or document..."
                       className="w-full bg-transparent rounded-xl pl-12 pr-4 py-4 text-text-primary placeholder:text-text-muted focus:outline-none text-base"
                     />
                   </div>
@@ -669,7 +668,7 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                         <p className="text-xs text-text-muted mb-4">Adjust before tracking</p>
 
                         <ChipSection
-                          label="Entities"
+                          label="Pension Funds"
                           items={refineEntities}
                           allItems={ALL_ENTITIES}
                           onAdd={addEntity}

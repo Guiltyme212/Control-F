@@ -17,6 +17,11 @@ export interface Signal {
   description: string;
 }
 
+export interface PdfLink {
+  url: string;
+  filename: string;
+}
+
 export interface Tracker {
   name: string;
   status: 'active' | 'paused';
@@ -58,6 +63,100 @@ export interface ApiMetric {
   page_reference: number | null;
   evidence_text: string;
   confidence: 'high' | 'medium' | 'low';
+}
+
+export type SearchIntent =
+  | 'commitment'
+  | 'performance'
+  | 'board'
+  | 'financial'
+  | 'general';
+
+export interface SourceRegistryEntry {
+  id: string;
+  pensionFund: string;
+  label: string;
+  url: string;
+  documentType: 'meeting' | 'minutes' | 'performance' | 'financial' | 'investment' | 'general';
+  intents: SearchIntent[];
+  keywords: string[];
+  notes?: string;
+}
+
+export interface SourceSearchCandidate {
+  id: string;
+  registryId: string;
+  pensionFund: string;
+  label: string;
+  url: string;
+  description: string;
+  score: number;
+  matchedKeywords: string[];
+  documentType: SourceRegistryEntry['documentType'];
+}
+
+export type LiveTrackerStatus =
+  | 'finding_sources'
+  | 'choose_source'
+  | 'scanning_pdfs'
+  | 'selecting_pdfs'
+  | 'extracting'
+  | 'complete'
+  | 'error';
+
+export interface LiveTrackerLog {
+  message: string;
+  status: 'info' | 'done' | 'error';
+}
+
+export interface LiveTrackerProgress {
+  current: number;
+  total: number;
+  currentFile: string;
+}
+
+export interface LiveSearchTracker {
+  id: string;
+  query: string;
+  pensionFunds: string[];
+  metrics: string[];
+  assetClasses: string[];
+  frequency: string;
+  status: LiveTrackerStatus;
+  message: string;
+  sourceCandidates: SourceSearchCandidate[];
+  selectedSource: SourceSearchCandidate | null;
+  pdfLinks: PdfLink[];
+  selectedPdfUrls: string[];
+  extractionLogs: LiveTrackerLog[];
+  progress: LiveTrackerProgress;
+  foundMetrics: Metric[];
+  foundSignals: Signal[];
+  errorMessage: string;
+  createdAt: string;
+}
+
+export interface LiveSearchTrackerSeed {
+  query: string;
+  pensionFunds: string[];
+  metrics: string[];
+  assetClasses: string[];
+  frequency: string;
+}
+
+export type ResultsOrigin = 'live-search' | 'upload-file' | 'upload-scrape';
+
+export interface ActiveResults {
+  id: string;
+  origin: ResultsOrigin;
+  title: string;
+  query: string;
+  metrics: Metric[];
+  signals: Signal[];
+  selectedSource: SourceSearchCandidate | null;
+  sourceSummary: string;
+  documentCount: number;
+  createdAt: string;
 }
 
 export type Page = 'search' | 'results' | 'dashboard' | 'trackers' | 'upload';

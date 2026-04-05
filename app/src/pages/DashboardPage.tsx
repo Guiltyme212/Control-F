@@ -4,7 +4,7 @@ import {
   TrendingDown, TrendingUp, Activity, FileText, Zap,
   DollarSign, AlertTriangle, Sparkles, Building2, Clock, Database,
 } from 'lucide-react';
-import type { Tracker } from '../data/types';
+import type { Page, Tracker } from '../data/types';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
@@ -12,6 +12,7 @@ import {
 import { useAppContext } from '../context/AppContext';
 import { useCountUp } from '../hooks/useCountUp';
 import { metrics, trackers, getCommitmentTotal } from '../data/metrics';
+import { LiveSearchTrackerCard } from '../components/LiveSearchTrackerCard';
 
 const COLORS = ['#6366f1', '#3b82f6', '#8b5cf6', '#f97316', '#06b6d4'];
 
@@ -150,12 +151,12 @@ function TrackerCard({ tracker, index, isHighlighted }: { tracker: Tracker; inde
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: 0.15 + index * 0.08, duration: 0.5, ease }}
       whileHover={{ y: -2, transition: { duration: 0.25, ease: 'easeOut' } }}
-      className={`group relative rounded-xl p-4 transition-all cursor-pointer overflow-hidden ${
+      className={`group relative cursor-pointer overflow-hidden rounded-2xl px-4 py-3.5 shadow-[0_20px_60px_rgba(5,10,20,0.22)] transition-all ${
         isHighlighted
-          ? 'bg-gradient-to-br from-accent/8 to-bg-card/90 border border-accent/25'
+          ? 'border border-accent/22 bg-gradient-to-br from-accent/8 to-bg-card/90'
           : tracker.status === 'paused'
-            ? 'bg-bg-card/60 border border-border/60'
-            : 'bg-bg-card/90 border border-border hover:border-accent/20'
+            ? 'border border-border/50 bg-bg-card/60'
+            : 'border border-border/70 bg-bg-card/90 hover:border-accent/20'
       }`}
     >
       {/* Hover glow */}
@@ -166,7 +167,7 @@ function TrackerCard({ tracker, index, isHighlighted }: { tracker: Tracker; inde
 
       <div className="relative">
         {/* Header */}
-        <div className="flex items-start justify-between mb-2.5">
+        <div className="mb-2 flex items-start justify-between">
           <div className="flex items-center gap-2.5 min-w-0">
             {tracker.status === 'active' ? (
               <motion.div
@@ -177,16 +178,16 @@ function TrackerCard({ tracker, index, isHighlighted }: { tracker: Tracker; inde
             ) : (
               <div className="w-2 h-2 rounded-full bg-text-muted/30 shrink-0 mt-1" />
             )}
-            <h4 className="text-sm font-semibold text-text-primary truncate">{tracker.name}</h4>
+            <h4 className="truncate text-[15px] font-semibold text-text-primary">{tracker.name}</h4>
           </div>
           <div className="flex items-center gap-2 shrink-0 ml-2">
             {(tracker.newAlerts ?? 0) > 0 && (
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-accent/15 text-accent-light">
+              <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-bold text-accent-light">
                 {tracker.newAlerts} new
               </span>
             )}
             {tracker.status === 'paused' && (
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-text-muted/10 text-text-muted">
+              <span className="rounded-full bg-text-muted/10 px-2 py-0.5 text-[10px] font-medium text-text-muted">
                 Paused
               </span>
             )}
@@ -195,7 +196,7 @@ function TrackerCard({ tracker, index, isHighlighted }: { tracker: Tracker; inde
 
         {/* Latest finding */}
         {tracker.latestFinding && (
-          <p className={`text-xs leading-relaxed mb-3 line-clamp-2 ${
+          <p className={`mb-2.5 line-clamp-1 text-xs leading-relaxed ${
             tracker.status === 'paused' ? 'text-text-muted/60' : 'text-text-secondary'
           }`}>
             {tracker.latestFinding}
@@ -203,18 +204,18 @@ function TrackerCard({ tracker, index, isHighlighted }: { tracker: Tracker; inde
         )}
 
         {/* Metadata row */}
-        <div className="flex items-center gap-2.5 text-[11px] text-text-muted">
-          <span className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-muted">
+          <span className="flex items-center gap-1 rounded-full border border-border/50 bg-bg-hover/60 px-2 py-1">
             <Database className="w-3 h-3" />
             {tracker.sources}
           </span>
-          <span className="text-border">·</span>
-          <span className="flex items-center gap-1">
+          <span className="hidden" aria-hidden="true">·</span>
+          <span className="flex items-center gap-1 rounded-full border border-border/50 bg-bg-hover/60 px-2 py-1">
             <Activity className="w-3 h-3" />
             {tracker.metrics}
           </span>
-          <span className="text-border">·</span>
-          <span className="flex items-center gap-1">
+          <span className="hidden" aria-hidden="true">·</span>
+          <span className="flex items-center gap-1 rounded-full border border-border/50 bg-bg-hover/60 px-2 py-1">
             <Clock className="w-3 h-3" />
             {tracker.frequency}
           </span>
@@ -229,26 +230,14 @@ function TrackerCard({ tracker, index, isHighlighted }: { tracker: Tracker; inde
    Main Dashboard
    ================================================================ */
 
-export function DashboardPage() {
-  const { searchQuery } = useAppContext();
+interface DashboardPageProps {
+  onNavigate: (page: Page) => void;
+}
 
-  const allTrackers = useMemo(() => {
-    if (searchQuery) {
-      const searchTracker: Tracker = {
-        id: 'search-active',
-        name: searchQuery,
-        status: 'active',
-        sources: 4,
-        metrics: 31,
-        last_match: 'Just now',
-        frequency: 'Weekly',
-        latestFinding: '8 new metrics found across 4 pension fund documents',
-        newAlerts: 8,
-      };
-      return [searchTracker, ...trackers];
-    }
-    return trackers;
-  }, [searchQuery]);
+export function DashboardPage({ onNavigate }: DashboardPageProps) {
+  const { liveTracker } = useAppContext();
+
+  const allTrackers = useMemo(() => trackers, []);
 
   const totalCapital = useMemo(() => getCommitmentTotal(), []);
   const capitalTarget = useMemo(() => Math.round(totalCapital / 10_000_000), [totalCapital]);
@@ -401,15 +390,18 @@ export function DashboardPage() {
                 Active Trackers
               </h2>
             </div>
-            <span className="text-[11px] text-text-muted">{allTrackers.filter(t => t.status === 'active').length} active</span>
+            <span className="text-[11px] text-text-muted">
+              {allTrackers.filter(t => t.status === 'active').length + (liveTracker ? 1 : 0)} active
+            </span>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-3">
+            {liveTracker && <LiveSearchTrackerCard onNavigate={onNavigate} />}
             {allTrackers.map((tracker, i) => (
               <TrackerCard
                 key={tracker.id ?? tracker.name}
                 tracker={tracker}
-                index={i}
-                isHighlighted={i === 0 && !!searchQuery}
+                index={i + (liveTracker ? 1 : 0)}
+                isHighlighted={false}
               />
             ))}
           </div>

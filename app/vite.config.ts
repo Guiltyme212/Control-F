@@ -5,9 +5,26 @@ import { readFileSync, writeFileSync, mkdtempSync, existsSync, appendFileSync } 
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { PDFDocument } from 'pdf-lib'
-import { getDocument, type DocumentInitParameters } from 'pdfjs-dist/legacy/build/pdf.mjs'
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 
 const MAX_PAGES = 50
+const UPSTREAM_FETCH_TIMEOUT_MS = 45000
+
+async function fetchWithTimeout(url: string): Promise<Response> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_FETCH_TIMEOUT_MS)
+
+  try {
+    return await fetch(url, { signal: controller.signal })
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Timed out after ${Math.round(UPSTREAM_FETCH_TIMEOUT_MS / 1000)}s while downloading the PDF`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
 
 // Cache downloaded + split PDFs so the client can fetch one chunk at a time
 const pdfCache = new Map<string, { tmpDir: string; totalPages: number; chunkCount: number }>()
@@ -20,13 +37,13 @@ async function ensurePdfCached(targetUrl: string): Promise<{ tmpDir: string; tot
   const srcPath = join(tmp, 'source.pdf')
 
   // Download via fetch
-  const resp = await fetch(targetUrl)
+  const resp = await fetchWithTimeout(targetUrl)
   if (!resp.ok) throw new Error(`Failed to download PDF: ${resp.status}`)
   const pdfBytes = Buffer.from(await resp.arrayBuffer())
   writeFileSync(srcPath, pdfBytes)
 
   // Use pdfjs-dist for robust page counting (handles PDFs that pdf-lib can't)
-  const pdfjsDoc = await getDocument({ data: new Uint8Array(pdfBytes), useSystemFonts: true } as DocumentInitParameters).promise
+  const pdfjsDoc = await getDocument({ data: new Uint8Array(pdfBytes), useSystemFonts: true }).promise
   const totalPages = pdfjsDoc.numPages
   pdfjsDoc.destroy()
 
@@ -200,7 +217,7 @@ export default defineConfig({
             if (!targetUrl) { res.statusCode = 400; res.end('Missing url'); return }
 
             try {
-              const upstream = await fetch(targetUrl)
+              const upstream = await fetchWithTimeout(targetUrl)
               if (!upstream.ok) { res.statusCode = upstream.status; res.end(`Upstream error: ${upstream.status}`); return }
               const buffer = Buffer.from(await upstream.arrayBuffer())
               res.setHeader('Content-Type', 'application/pdf')

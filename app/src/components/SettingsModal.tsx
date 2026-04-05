@@ -16,11 +16,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   useEffect(() => {
     if (isOpen) {
-      setLocalKey(apiKey);
-      setShowKey(false);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
-  }, [isOpen, apiKey]);
+  }, [isOpen]);
 
   function handleSave() {
     setApiKey(localKey.trim());

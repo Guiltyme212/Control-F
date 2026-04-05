@@ -68,15 +68,9 @@ export function CommandPalette({ isOpen, onClose, onNavigate, metrics }: Command
 
   useEffect(() => {
     if (isOpen) {
-      setQuery('');
-      setSelectedIndex(0);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [isOpen]);
-
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [query]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -134,7 +128,10 @@ export function CommandPalette({ isOpen, onClose, onNavigate, metrics }: Command
                 ref={inputRef}
                 type="text"
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setSelectedIndex(0);
+                }}
                 placeholder="Search pages, metrics, funds..."
                 className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-muted outline-none"
               />

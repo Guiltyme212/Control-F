@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useCallback } from 'react';
-import type { ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import type { ReactNode, Dispatch, SetStateAction } from 'react';
+import type { ActiveResults, LiveSearchTracker, LiveSearchTrackerSeed } from '../data/types';
 
 interface AppState {
   searchQuery: string;
@@ -8,6 +9,13 @@ interface AppState {
   setApiKey: (key: string) => void;
   hasSearched: boolean;
   setHasSearched: (v: boolean) => void;
+  liveTracker: LiveSearchTracker | null;
+  setLiveTracker: Dispatch<SetStateAction<LiveSearchTracker | null>>;
+  activeResults: ActiveResults | null;
+  setActiveResults: Dispatch<SetStateAction<ActiveResults | null>>;
+  createLiveTracker: (seed: LiveSearchTrackerSeed) => void;
+  clearLiveTracker: () => void;
+  clearActiveResults: () => void;
 }
 
 const AppContext = createContext<AppState | null>(null);
@@ -29,10 +37,65 @@ export function AppProvider({ children }: AppProviderProps) {
     return '';
   });
   const [hasSearched, setHasSearched] = useState(false);
+  const [liveTracker, setLiveTracker] = useState<LiveSearchTracker | null>(null);
+  const [activeResults, setActiveResults] = useState<ActiveResults | null>(null);
+
+  useEffect(() => {
+    function syncApiKeyFromSession() {
+      const stored = sessionStorage.getItem('anthropic_key') || import.meta.env.VITE_ANTHROPIC_API_KEY || '';
+      if (stored !== apiKey) {
+        setApiKeyState(stored);
+      }
+    }
+
+    syncApiKeyFromSession();
+    window.addEventListener('focus', syncApiKeyFromSession);
+    document.addEventListener('visibilitychange', syncApiKeyFromSession);
+
+    return () => {
+      window.removeEventListener('focus', syncApiKeyFromSession);
+      document.removeEventListener('visibilitychange', syncApiKeyFromSession);
+    };
+  }, [apiKey]);
 
   const setApiKey = useCallback((key: string) => {
     setApiKeyState(key);
-    sessionStorage.setItem('anthropic_key', key);
+    if (key) {
+      sessionStorage.setItem('anthropic_key', key);
+    } else {
+      sessionStorage.removeItem('anthropic_key');
+    }
+  }, []);
+
+  const createLiveTracker = useCallback((seed: LiveSearchTrackerSeed) => {
+    setLiveTracker({
+      id: `live-tracker-${Date.now()}`,
+      query: seed.query,
+      pensionFunds: seed.pensionFunds,
+      metrics: seed.metrics,
+      assetClasses: seed.assetClasses,
+      frequency: seed.frequency,
+      status: 'finding_sources',
+      message: 'Searching for relevant documents...',
+      sourceCandidates: [],
+      selectedSource: null,
+      pdfLinks: [],
+      selectedPdfUrls: [],
+      extractionLogs: [],
+      progress: { current: 0, total: 0, currentFile: '' },
+      foundMetrics: [],
+      foundSignals: [],
+      errorMessage: '',
+      createdAt: new Date().toISOString(),
+    });
+  }, []);
+
+  const clearLiveTracker = useCallback(() => {
+    setLiveTracker(null);
+  }, []);
+
+  const clearActiveResults = useCallback(() => {
+    setActiveResults(null);
   }, []);
 
   return (
@@ -44,6 +107,13 @@ export function AppProvider({ children }: AppProviderProps) {
         setApiKey,
         hasSearched,
         setHasSearched,
+        liveTracker,
+        setLiveTracker,
+        activeResults,
+        setActiveResults,
+        createLiveTracker,
+        clearLiveTracker,
+        clearActiveResults,
       }}
     >
       {children}
@@ -51,6 +121,7 @@ export function AppProvider({ children }: AppProviderProps) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAppContext(): AppState {
   const context = useContext(AppContext);
   if (!context) {
