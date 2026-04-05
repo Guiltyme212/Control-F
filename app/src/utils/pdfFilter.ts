@@ -255,10 +255,24 @@ export async function scorePages(pdfData: Uint8Array, focusKeywords: string[] = 
 }
 
 export function selectTopPages(scores: PageScore[], maxPages: number): number[] {
-  return scores
+  const totalPages = scores.length;
+  const topHits = scores
     .filter((p) => p.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, maxPages)
-    .sort((a, b) => a.pageNum - b.pageNum)
-    .map((p) => p.pageNum);
+    .slice(0, maxPages);
+
+  // Expand each hit into a page window (page-1, page, page+1) to catch
+  // adjacent summary rows, totals, and table continuations
+  const windowPages = new Set<number>();
+  for (const hit of topHits) {
+    if (hit.pageNum > 1) windowPages.add(hit.pageNum - 1);
+    windowPages.add(hit.pageNum);
+    if (hit.pageNum < totalPages) windowPages.add(hit.pageNum + 1);
+  }
+
+  // Cap at a reasonable limit (slightly above maxPages to allow windows)
+  const windowMax = Math.min(Math.ceil(maxPages * 1.6), maxPages + 5);
+  return [...windowPages]
+    .sort((a, b) => a - b)
+    .slice(0, windowMax);
 }

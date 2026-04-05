@@ -22,6 +22,17 @@ export interface PdfLink {
   filename: string;
 }
 
+export interface PdfScorecard {
+  url: string;
+  filename: string;
+  filenameScore: number;
+  previewScore: number;
+  previewMatchedMetrics: string[];
+  previewNegativeSignals: string[];
+  combinedScore: number;
+  wasSelected: boolean;
+}
+
 export interface Tracker {
   name: string;
   status: 'active' | 'paused';
@@ -107,6 +118,7 @@ export type LiveTrackerStatus =
 export interface LiveTrackerLog {
   message: string;
   status: 'info' | 'done' | 'error';
+  detail?: string;
 }
 
 export interface LiveTrackerProgress {
@@ -132,6 +144,7 @@ export interface LiveSearchTracker {
   progress: LiveTrackerProgress;
   foundMetrics: Metric[];
   foundSignals: Signal[];
+  scorecards: PdfScorecard[];
   errorMessage: string;
   createdAt: string;
 }

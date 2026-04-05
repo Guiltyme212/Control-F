@@ -4,6 +4,7 @@ import {
   getFocusMetricTargets,
   isBroadAllocationMetric,
   isPerformanceMultiple,
+  isProxyMetricMatch,
   metricMatchesRequestedFocus,
   sortMetricNames,
 } from './searchFocus';
@@ -14,8 +15,11 @@ interface AssessLiveResultArgs {
   selectedSource?: SourceSearchCandidate | null;
 }
 
+export type CompletenessLabel = 'complete' | 'partial' | 'partial-subset' | 'weak';
+
 export interface LiveResultAssessment {
   isWeakMatch: boolean;
+  completeness: CompletenessLabel;
   headline: string;
   detail: string;
   hideSignals: boolean;
@@ -49,6 +53,22 @@ const PERFORMANCE_METRIC_TYPES = new Set([
   'Performance',
 ]);
 
+function deriveCompleteness(
+  isWeakMatch: boolean,
+  focusMetricTypes: string[],
+  missingFocusMetrics: string[],
+  matchedFocusMetrics: Metric[],
+): CompletenessLabel {
+  if (isWeakMatch) return 'weak';
+  if (focusMetricTypes.length === 0) {
+    // Broad query — partial if no performance metrics, complete otherwise
+    return matchedFocusMetrics.length > 0 || !isWeakMatch ? 'complete' : 'partial';
+  }
+  if (missingFocusMetrics.length === 0) return 'complete';
+  if (matchedFocusMetrics.length > 0) return 'partial';
+  return 'weak';
+}
+
 function buildAssessment(
   intents: SearchIntent[],
   focusMetricTypes: string[],
@@ -65,6 +85,7 @@ function buildAssessment(
 ): LiveResultAssessment {
   return {
     isWeakMatch,
+    completeness: deriveCompleteness(isWeakMatch, focusMetricTypes, missingFocusMetrics, matchedFocusMetrics),
     headline,
     detail,
     hideSignals,
@@ -140,10 +161,10 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
       actionableCommitments,
       infrastructureCommitments,
       true,
-      `Weak match: this file does not surface ${missingFocusMetrics.join(', ')} metrics.`,
+      `Weak match: ${missingFocusMetrics.join(', ')} not found in the reviewed files.`,
       broadAllocationMetrics.length > 0
-        ? 'The extraction found real numbers, but they are mostly broad allocation or AUM rows rather than the requested performance multiples.'
-        : `The extraction found real numbers, but not the ${missingFocusMetrics.join(', ')} figures requested in the search.`,
+        ? 'The reviewed files contain real numbers, but mostly broad allocation or AUM rows rather than the requested performance multiples.'
+        : `The reviewed files contain real numbers, but ${missingFocusMetrics.join(', ')} were not found in the selected documents.`,
       true,
     );
   }
@@ -167,8 +188,8 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
       false,
       `Partial match: found ${matchedLabel.join(', ')} but not ${missingFocusMetrics.join(', ')}.`,
       broadAllocationMetrics.length > matchedFocusMetrics.length
-        ? `This PDF is in the right family and it surfaced ${matchedLabel.join(', ')}, but it still looks broader than ideal. Try another private-markets performance PDF to fill in ${missingFocusMetrics.join(', ')}.`
-        : `This run found part of the answer. You have ${matchedLabel.join(', ')}, but ${missingFocusMetrics.join(', ')} is still missing from this file.`,
+        ? `This PDF surfaced ${matchedLabel.join(', ')}, but ${missingFocusMetrics.join(', ')} were not found in this document. The system will try the next best report.`
+        : `Found ${matchedLabel.join(', ')} in this report, but ${missingFocusMetrics.join(', ')} not present in the reviewed documents.`,
       false,
     );
   }
@@ -259,4 +280,74 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
     'This extraction surfaced direct metrics that appear relevant to the search.',
     false,
   );
+}
+
+function assetClassMatches(metricAssetClass: string, hints: string[]): boolean {
+  if (hints.length === 0) return true;
+  const normalized = metricAssetClass.toLowerCase();
+  // Also accept "Total" and "Total Private Markets" style rows as matching any hint
+  if (normalized.includes('total') || normalized.includes('combined') || normalized.includes('aggregate')) {
+    return true;
+  }
+  return hints.some((hint) => {
+    const h = hint.toLowerCase();
+    // Direct match
+    if (normalized.includes(h) || h.includes(normalized)) return true;
+    // Common aliases
+    if (h === 'private equity' && (normalized.includes('pe') || normalized.includes('buyout'))) return true;
+    if (h === 'infrastructure' && normalized.includes('infra')) return true;
+    if (h === 'real estate' && (normalized.includes('property') || normalized.includes('reit'))) return true;
+    if (h === 'credit' && (normalized.includes('debt') || normalized.includes('lending') || normalized.includes('fixed income'))) return true;
+    if (h === 'private markets' && (normalized.includes('private') || normalized.includes('alternative'))) return true;
+    return false;
+  });
+}
+
+export function computeCoverageScore(
+  metrics: Metric[],
+  requestedMetricTypes: string[],
+  assetClassHints: string[] = [],
+): { score: number; foundTypes: string[]; missingTypes: string[] } {
+  if (requestedMetricTypes.length === 0) {
+    return { score: 1, foundTypes: [], missingTypes: [] };
+  }
+
+  const meaningfulMetrics = metrics.filter((m) => !isNoActivityValue(m.value));
+  const scopedMetrics = assetClassHints.length > 0
+    ? meaningfulMetrics.filter((m) => assetClassMatches(m.asset_class, assetClassHints))
+    : meaningfulMetrics;
+  const foundTypes = sortMetricNames(
+    requestedMetricTypes.filter((metricType) =>
+      scopedMetrics.some((m) => metricMatchesRequestedFocus(m, [metricType])),
+    ),
+  );
+
+  // Don't count metric types that only have proxy matches (e.g., "Multiple of Cost" ≠ TVPI)
+  const solidFoundTypes = foundTypes.filter((metricType) => {
+    const matchingMetrics = scopedMetrics.filter((m) => metricMatchesRequestedFocus(m, [metricType]));
+    // At least one non-proxy match required
+    return matchingMetrics.some((m) => !isProxyMetricMatch(m));
+  });
+
+  const missingTypes = sortMetricNames(
+    requestedMetricTypes.filter((metricType) => !solidFoundTypes.includes(metricType)),
+  );
+
+  return {
+    score: solidFoundTypes.length / requestedMetricTypes.length,
+    foundTypes: solidFoundTypes,
+    missingTypes,
+  };
+}
+
+export function shouldAutoRetry(
+  metrics: Metric[],
+  requestedMetricTypes: string[],
+  attemptCount: number,
+  maxAttempts = 2,
+): boolean {
+  if (requestedMetricTypes.length === 0) return false;
+  if (attemptCount >= maxAttempts) return false;
+  const { score } = computeCoverageScore(metrics, requestedMetricTypes);
+  return score < 1.0;
 }

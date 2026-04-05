@@ -85,6 +85,7 @@ export function AppProvider({ children }: AppProviderProps) {
       progress: { current: 0, total: 0, currentFile: '' },
       foundMetrics: [],
       foundSignals: [],
+      scorecards: [],
       errorMessage: '',
       createdAt: new Date().toISOString(),
     });

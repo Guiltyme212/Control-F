@@ -10,12 +10,12 @@ import {
   Search,
   Sparkles,
 } from 'lucide-react';
-import { detectSearchIntents, extractMetricsFromPdfUrl, discoverSourceCandidates, fetchPdfPreviewSubset, scrapeUrlForPdfs, selectBestPdfWithLLM } from '../utils/api';
+import { deduplicateMetrics, detectSearchIntents, extractMetricsFromPdfUrl, discoverSourceCandidates, fetchPdfPreviewSubset, scrapeUrlForPdfs, selectBestPdfWithLLM } from '../utils/api';
 import type { PdfCandidate } from '../utils/api';
 import { extractPdfPreviewText, scorePreviewText } from '../utils/pdfFilter';
-import { assessLiveResult } from '../utils/liveResultAssessment';
+import { assessLiveResult, computeCoverageScore, shouldAutoRetry } from '../utils/liveResultAssessment';
 import { useAppContext } from '../context/AppContext';
-import type { Metric, Page, PdfLink, SearchIntent, Signal, SourceSearchCandidate } from '../data/types';
+import type { Metric, Page, PdfLink, PdfScorecard, SearchIntent, Signal, SourceSearchCandidate } from '../data/types';
 import { getFocusKeywords, getFocusMetricTargets } from '../utils/searchFocus';
 
 interface LiveSearchTrackerCardProps {
@@ -62,10 +62,18 @@ const SOURCE_PREFLIGHT_PDF_COUNT = 3;
 const EMPTY_PREVIEW_STATES: Record<string, PdfPreviewState> = {};
 const EMPTY_SOURCE_PROBE_STATES: Record<string, SourceProbeState> = {};
 
+function softenSignalText(text: string): string {
+  return text
+    .replace(/\bnot available\b/gi, 'not found in reviewed files')
+    .replace(/\bnot reported in this document\b/gi, 'not found in the selected document')
+    .replace(/\bis not reported\b/gi, 'was not found')
+    .replace(/\bdoes not contain\b/gi, 'did not contain');
+}
+
 function mapSignals(signals: { signal_type: string; description: string }[]): Signal[] {
   return signals.map((signal) => ({
-    type: signal.signal_type,
-    description: signal.description,
+    type: softenSignalText(signal.signal_type),
+    description: softenSignalText(signal.description),
   }));
 }
 
@@ -389,17 +397,15 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
 
         // Merge all PDFs into one list with source labels
         const allPdfs: PdfCandidate[] = [];
-        let bestSource = topSources[0];
-        let bestSourcePdfCount = 0;
+        const sourceByLabel = new Map<string, SourceSearchCandidate>();
         for (const { source, pdfs } of scrapeResults) {
+          sourceByLabel.set(source.label, source);
           for (const pdf of pdfs) {
             allPdfs.push({ url: pdf.url, filename: pdf.filename, sourceLabel: source.label });
           }
-          if (pdfs.length > bestSourcePdfCount) {
-            bestSourcePdfCount = pdfs.length;
-            bestSource = source;
-          }
         }
+        // Default to the top-ranked source; overridden after PDF selection
+        let bestSource = topSources[0];
 
         if (allPdfs.length === 0) {
           addLog('No PDFs found on any source page', 'error');
@@ -419,39 +425,136 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
 
         addLog(`Total: ${allPdfs.length} PDFs across ${topSources.length} sources`, 'done');
 
-        // Step 3: Use LLM to pick the best PDF
-        addLog('Asking AI to identify the best PDF for your query...');
+        // Step 3: Preview-score top PDF candidates before LLM selection
+        const autoIntents = detectSearchIntents(trackerQuery);
+        const autoFocusKws = getFocusKeywords(trackerQuery, autoIntents);
+        const autoFocusMetrics = getFocusMetricTargets(trackerQuery);
+
+        // Rank by filename heuristic first
+        const heuristicRanked = allPdfs
+          .map((pdf) => ({
+            pdf,
+            score: scorePdfLink({ url: pdf.url, filename: pdf.filename }, autoIntents, trackerQuery, undefined).score,
+          }))
+          .sort((a, b) => b.score - a.score);
+
+        // Preview-score top candidates in parallel
+        const previewCandidateCount = Math.min(heuristicRanked.length, 5);
+        addLog(`Previewing top ${previewCandidateCount} PDFs locally...`);
         setLiveTracker((current) =>
           current
-            ? {
-                ...current,
-                message: `Found ${allPdfs.length} PDFs. Identifying best match...`,
-              }
+            ? { ...current, message: `Previewing ${previewCandidateCount} PDFs to find best match...` }
             : current,
         );
 
-        let selectedPdfs = allPdfs.slice(0, 2); // fallback
+        const previewResults = await Promise.allSettled(
+          heuristicRanked.slice(0, previewCandidateCount).map(async ({ pdf, score: fnScore }) => {
+            try {
+              const subset = await fetchPdfPreviewSubset(pdf.url, [1, 2, 3]);
+              const preview = await extractPdfPreviewText(subset, 3);
+              const pScore = scorePreviewText(preview.text, autoFocusKws, autoFocusMetrics);
+              return {
+                pdf: {
+                  ...pdf,
+                  previewScore: pScore.score,
+                  previewMatchedMetrics: pScore.matchedMetricTypes,
+                  previewNegativeSignals: pScore.negativeSignals,
+                } as PdfCandidate,
+                filenameScore: fnScore,
+                combinedScore: fnScore + pScore.score,
+                previewScore: pScore.score,
+                matchedMetrics: pScore.matchedMetricTypes,
+                negativeSignals: pScore.negativeSignals,
+              };
+            } catch {
+              return {
+                pdf,
+                filenameScore: fnScore,
+                combinedScore: fnScore,
+                previewScore: 0,
+                matchedMetrics: [] as string[],
+                negativeSignals: [] as string[],
+              };
+            }
+          }),
+        );
+        if (cancelled) return;
+
+        // Build scorecards for debug
+        const autoScorecards: PdfScorecard[] = [];
+        const enrichedCandidates: PdfCandidate[] = [];
+        for (const result of previewResults) {
+          if (result.status === 'fulfilled') {
+            const r = result.value;
+            enrichedCandidates.push(r.pdf);
+            autoScorecards.push({
+              url: r.pdf.url,
+              filename: r.pdf.filename,
+              filenameScore: r.filenameScore,
+              previewScore: r.previewScore,
+              previewMatchedMetrics: r.matchedMetrics,
+              previewNegativeSignals: r.negativeSignals,
+              combinedScore: r.combinedScore,
+              wasSelected: false,
+            });
+          }
+        }
+
+        // Filter out strong negative signals, sort by combined score
+        const viableCandidates = enrichedCandidates
+          .filter((c) => (c.previewScore ?? 0) >= -5)
+          .sort((a, b) => (b.previewScore ?? 0) - (a.previewScore ?? 0));
+
+        if (viableCandidates.length > 0) {
+          const best = viableCandidates[0];
+          addLog(
+            `Best preview: ${best.filename} (score ${best.previewScore ?? 0}${best.previewMatchedMetrics?.length ? `, matched ${best.previewMatchedMetrics.join(', ')}` : ''})`,
+            'done',
+          );
+        }
+
+        // Include non-previewed PDFs as fallback
+        const previewedUrls = new Set(enrichedCandidates.map((c) => c.url));
+        const fallbackPdfs = allPdfs.filter((p) => !previewedUrls.has(p.url));
+        const finalCandidates = [...viableCandidates, ...fallbackPdfs];
+
+        // Step 4: LLM picks from enriched candidates
+        addLog('Asking AI to confirm best PDF...');
+        setLiveTracker((current) =>
+          current
+            ? { ...current, message: `Found ${allPdfs.length} PDFs. Confirming best match...` }
+            : current,
+        );
+
+        let selectedPdfs = finalCandidates.slice(0, 2); // fallback
         if (effectiveApiKey) {
           try {
-            selectedPdfs = await selectBestPdfWithLLM(allPdfs, trackerQuery, effectiveApiKey);
+            selectedPdfs = await selectBestPdfWithLLM(finalCandidates.slice(0, 15), trackerQuery, effectiveApiKey);
             addLog(`AI selected: ${selectedPdfs.map((p) => p.filename).join(', ')}`, 'done');
           } catch {
-            // LLM selection failed — use filename heuristic ranking
-            addLog('AI selection unavailable, using heuristic ranking', 'error');
-            const intents = detectSearchIntents(trackerQuery);
-            const ranked = allPdfs
-              .map((pdf) => ({
-                pdf,
-                score: scorePdfLink({ url: pdf.url, filename: pdf.filename }, intents, trackerQuery, undefined).score,
-              }))
-              .sort((a, b) => b.score - a.score);
-            selectedPdfs = ranked.slice(0, 2).map((r) => r.pdf);
-            addLog(`Heuristic selected: ${selectedPdfs[0]?.filename}`, 'done');
+            addLog('AI selection unavailable, using preview ranking', 'error');
+            selectedPdfs = finalCandidates.slice(0, 2);
           }
         }
         if (cancelled) return;
 
+        // Mark selected in scorecards
+        const selectedUrlSet = new Set(selectedPdfs.map((p) => p.url));
+        for (const sc of autoScorecards) {
+          sc.wasSelected = selectedUrlSet.has(sc.url);
+        }
+
         const bestPdf = selectedPdfs[0];
+
+        // Fix provenance: bestSource must reflect the actual selected PDF's source, not PDF count
+        if (bestPdf?.sourceLabel) {
+          const matchedSource = sourceByLabel.get(bestPdf.sourceLabel)
+            ?? candidates.find((c) => c.label === bestPdf.sourceLabel);
+          if (matchedSource) {
+            bestSource = matchedSource;
+          }
+        }
+
         if (!bestPdf) {
           setLiveTracker((current) =>
             current
@@ -467,16 +570,17 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
           return;
         }
 
-        // Step 4: Auto-select and go straight to extracting
-        const allPdfLinks = allPdfs.map((p) => ({ url: p.url, filename: p.filename }));
+        // Step 5: Auto-select and go straight to extracting
+        const rankedPdfLinks = finalCandidates.map((p) => ({ url: p.url, filename: p.filename }));
         setLiveTracker((current) =>
           current
             ? {
                 ...current,
                 sourceCandidates: candidates,
                 selectedSource: bestSource,
-                pdfLinks: allPdfLinks,
+                pdfLinks: rankedPdfLinks,
                 selectedPdfUrls: [bestPdf.url],
+                scorecards: autoScorecards,
                 status: 'extracting',
                 message: `Best match: ${bestPdf.filename}. Extracting metrics...`,
                 extractionLogs: [...logs, { message: `Starting ${bestPdf.filename}`, status: 'info' as const }],
@@ -695,6 +799,75 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         return;
       }
 
+      // Auto-retry: if partial coverage and more PDFs available, try next best
+      const retryFocusMetrics = getFocusMetricTargets(liveTrackerQuery);
+      let totalDocumentsUsed = selectedPdfLinks.length;
+      if (shouldAutoRetry(allMetrics, retryFocusMetrics, 1) && !cancelled) {
+        const extractedUrls = new Set(tracker.selectedPdfUrls);
+        const nextPdf = tracker.pdfLinks.find((link) => !extractedUrls.has(link.url));
+        if (nextPdf) {
+          const coverage = computeCoverageScore(allMetrics, retryFocusMetrics, liveTrackerAssetClasses);
+          setLiveTracker((current) =>
+            current
+              ? {
+                  ...current,
+                  selectedPdfUrls: [...current.selectedPdfUrls, nextPdf.url],
+                  extractionLogs: [
+                    ...current.extractionLogs,
+                    {
+                      message: `Found ${coverage.foundTypes.length} of ${retryFocusMetrics.length} requested metrics — trying next PDF...`,
+                      status: 'info' as const,
+                    },
+                  ],
+                  progress: {
+                    current: selectedPdfLinks.length + 1,
+                    total: selectedPdfLinks.length + 1,
+                    currentFile: nextPdf.filename,
+                  },
+                }
+              : current,
+          );
+
+          const retryLog = (message: string, status: 'info' | 'done' | 'error' = 'info') => {
+            setLiveTracker((current) =>
+              current
+                ? { ...current, extractionLogs: [...current.extractionLogs, { message, status }] }
+                : current,
+            );
+          };
+
+          try {
+            const retryFocusQuery = [
+              liveTrackerQuery,
+              liveTrackerMetrics.length ? `Focus metrics: ${liveTrackerMetrics.join(', ')}` : '',
+              liveTrackerAssetClasses.length ? `Asset classes: ${liveTrackerAssetClasses.join(', ')}` : '',
+            ].filter(Boolean).join(' | ');
+            const retryResult = await extractMetricsFromPdfUrl(nextPdf.url, effectiveApiKey, retryLog, {
+              focusQuery: retryFocusQuery,
+            });
+            if (!cancelled) {
+              allMetrics.push(...retryResult.metrics);
+              allSignals.push(...mapSignals(retryResult.signals));
+              const dedupedMetrics = deduplicateMetrics(allMetrics);
+              allMetrics.length = 0;
+              allMetrics.push(...dedupedMetrics);
+              totalDocumentsUsed += 1;
+
+              const finalCoverage = computeCoverageScore(allMetrics, retryFocusMetrics, liveTrackerAssetClasses);
+              retryLog(
+                `After retry: found ${finalCoverage.foundTypes.length} of ${retryFocusMetrics.length} requested metrics`,
+                'done',
+              );
+            }
+          } catch (error) {
+            if (!cancelled) {
+              const msg = error instanceof Error ? error.message : 'Retry extraction failed';
+              retryLog(`Retry error: ${msg}`, 'error');
+            }
+          }
+        }
+      }
+
       setLiveTracker((current) =>
         current
           ? {
@@ -718,7 +891,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         sourceSummary: liveTrackerSelectedSource
           ? `${liveTrackerSelectedSource.pensionFund} - ${liveTrackerSelectedSource.label}`
           : 'Live search tracker',
-        documentCount: selectedPdfLinks.length,
+        documentCount: totalDocumentsUsed,
         createdAt: new Date().toISOString(),
       });
     }
@@ -1942,15 +2115,18 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                     )}
                     <span className="text-sm font-medium text-text-primary">
                       {resultAssessment?.isWeakMatch
-                        ? 'Extraction complete, but this looks like a weak match'
+                        ? 'Weak match — likely wrong document type'
                         : isPartialMatch
-                          ? 'Extraction complete, and this looks like a partial match'
-                          : 'Extraction complete'}
+                          ? `Found ${new Set(resultAssessment?.matchedFocusMetrics.map((m) => m.metric)).size} of ${resultAssessment?.focusMetricTypes.length ?? '?'} requested metrics`
+                          : requestedMetricTypes.length > 0
+                            ? `All ${requestedMetricTypes.length} requested metrics found`
+                            : 'Extraction complete'}
                     </span>
                   </div>
                   <p className="text-sm text-text-primary">
-                    Found {liveTracker.foundMetrics.length} metric{liveTracker.foundMetrics.length === 1 ? '' : 's'} from{' '}
-                    {liveTracker.selectedPdfUrls.length} PDF{liveTracker.selectedPdfUrls.length === 1 ? '' : 's'}.
+                    {requestedMetricTypes.length > 0
+                      ? `${liveTracker.foundMetrics.length} total rows extracted from ${liveTracker.selectedPdfUrls.length} PDF${liveTracker.selectedPdfUrls.length === 1 ? '' : 's'}`
+                      : `Found ${liveTracker.foundMetrics.length} metric${liveTracker.foundMetrics.length === 1 ? '' : 's'} from ${liveTracker.selectedPdfUrls.length} PDF${liveTracker.selectedPdfUrls.length === 1 ? '' : 's'}`}
                   </p>
                   {(resultAssessment?.isWeakMatch || isPartialMatch) && (
                     <>
@@ -1965,9 +2141,27 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                     </>
                   )}
                   {selectedSource && (
-                    <p className="text-xs text-text-muted mt-1">
-                      Source: {selectedSource.pensionFund} - {selectedSource.label}
-                    </p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <p className="text-xs text-text-muted">
+                        Source: {selectedSource.pensionFund} - {selectedSource.label}
+                      </p>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                        selectedSource.documentType === 'performance'
+                          ? 'bg-green/15 text-green'
+                          : selectedSource.documentType === 'meeting' || selectedSource.documentType === 'minutes'
+                            ? 'bg-yellow/15 text-yellow'
+                            : selectedSource.documentType === 'financial'
+                              ? 'bg-blue/15 text-blue'
+                              : 'bg-accent/15 text-accent-light'
+                      }`}>
+                        {selectedSource.documentType === 'performance' ? 'Performance Report'
+                          : selectedSource.documentType === 'meeting' ? 'Board Meeting'
+                          : selectedSource.documentType === 'minutes' ? 'Meeting Minutes'
+                          : selectedSource.documentType === 'financial' ? 'Financial Report'
+                          : selectedSource.documentType === 'investment' ? 'Investment Report'
+                          : 'General'}
+                      </span>
+                    </div>
                   )}
                 </div>
                 <div className="flex gap-2 shrink-0">

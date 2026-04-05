@@ -324,10 +324,15 @@ export function ResultsPage() {
     if (liveAssessment?.focusMetricTypes.length && liveAssessment.missingFocusMetrics.length > 0) {
       return `${currentResults.selectedSource?.pensionFund || currentResults.title} partially answered this query. Matched ${formatMetricList(Array.from(new Set(liveAssessment.matchedFocusMetrics.map((metric) => metric.metric))))}; still missing ${formatMetricList(liveAssessment.missingFocusMetrics)}.`;
     }
-    const featuredMetric = liveAssessment?.matchedFocusMetrics[0]
-      ?? liveAssessment?.performanceMetrics[0]
-      ?? currentResults.metrics[0];
-    return `${featuredMetric.lp} ${featuredMetric.metric.toLowerCase()} ${featuredMetric.value} in ${featuredMetric.fund}`;
+    // For broad queries, summarize what was found across asset classes
+    const meaningfulMetrics = currentResults.metrics.filter((m) => m.value.trim().toLowerCase() !== 'no activity');
+    const assetClasses = Array.from(new Set(meaningfulMetrics.map((m) => m.asset_class).filter(Boolean)));
+    const metricTypes = Array.from(new Set(meaningfulMetrics.map((m) => m.metric).filter(Boolean)));
+    const fund = currentResults.selectedSource?.pensionFund || currentResults.title;
+    if (assetClasses.length > 1) {
+      return `${fund}: found ${metricTypes.length} metric type${metricTypes.length === 1 ? '' : 's'} across ${assetClasses.length} asset classes from the latest report.`;
+    }
+    return `${fund}: found ${meaningfulMetrics.length} data point${meaningfulMetrics.length === 1 ? '' : 's'} in the selected report.`;
   }, [currentResults, liveAssessment]);
   const defaultMetricFilter = currentResults?.origin === 'live-search' && liveAssessment?.focusMetricTypes.length
     ? REQUESTED_METRICS_FILTER
@@ -507,13 +512,113 @@ export function ResultsPage() {
           <span className="font-medium text-text-primary">{resultModeLabel}</span>
           <span className="text-text-muted">•</span>
           <span className="truncate">{currentResults.sourceSummary}</span>
+          {currentResults.selectedSource?.documentType && (
+            <>
+              <span className="text-text-muted">•</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${
+                currentResults.selectedSource.documentType === 'performance'
+                  ? 'bg-green/15 text-green'
+                  : currentResults.selectedSource.documentType === 'meeting' || currentResults.selectedSource.documentType === 'minutes'
+                    ? 'bg-yellow/15 text-yellow'
+                    : currentResults.selectedSource.documentType === 'financial'
+                      ? 'bg-blue/15 text-blue'
+                      : 'bg-accent/15 text-accent-light'
+              }`}>
+                {currentResults.selectedSource.documentType === 'performance' ? 'Performance Report'
+                  : currentResults.selectedSource.documentType === 'meeting' ? 'Board Meeting'
+                  : currentResults.selectedSource.documentType === 'minutes' ? 'Meeting Minutes'
+                  : currentResults.selectedSource.documentType === 'financial' ? 'Financial Report'
+                  : currentResults.selectedSource.documentType === 'investment' ? 'Investment Report'
+                  : 'General'}
+              </span>
+            </>
+          )}
+          {liveAssessment?.completeness && (
+            <>
+              <span className="text-text-muted">•</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${
+                liveAssessment.completeness === 'complete'
+                  ? 'bg-green/15 text-green'
+                  : liveAssessment.completeness === 'partial'
+                    ? 'bg-accent/15 text-accent-light'
+                    : liveAssessment.completeness === 'weak'
+                      ? 'bg-yellow/15 text-yellow'
+                      : 'bg-accent/15 text-accent-light'
+              }`}>
+                {liveAssessment.completeness === 'complete' ? 'Complete'
+                  : liveAssessment.completeness === 'partial' ? 'Partial'
+                  : liveAssessment.completeness === 'weak' ? 'Weak Match'
+                  : 'Partial from Subset'}
+              </span>
+            </>
+          )}
         </div>
       )}
+
+      {/* Answer Summary — What was found / What is missing */}
+      {currentResults?.origin === 'live-search' && liveAssessment && (() => {
+        const meaningful = currentResults.metrics.filter((m) => m.value.trim().toLowerCase() !== 'no activity');
+        const assetClasses = Array.from(new Set(meaningful.map((m) => m.asset_class).filter(Boolean)));
+        const metricTypesFound = Array.from(new Set(meaningful.map((m) => m.metric).filter(Boolean)));
+        const missing = liveAssessment.missingFocusMetrics;
+        const hasGaps = missing.length > 0 || liveAssessment.isWeakMatch;
+
+        return (assetClasses.length > 0 || hasGaps) ? (
+          <div className="mb-6 grid grid-cols-2 gap-4">
+            <div className="rounded-xl border border-green/15 bg-green/5 p-4">
+              <p className="text-xs font-semibold text-green uppercase tracking-wider mb-2">What was found</p>
+              <div className="space-y-1">
+                {assetClasses.slice(0, 6).map((ac) => {
+                  const acMetrics = meaningful.filter((m) => m.asset_class === ac);
+                  const types = Array.from(new Set(acMetrics.map((m) => m.metric)));
+                  return (
+                    <p key={ac} className="text-sm text-text-secondary">
+                      <span className="text-text-primary font-medium">{ac}</span>
+                      <span className="text-text-muted"> — {types.join(', ')}</span>
+                    </p>
+                  );
+                })}
+                {assetClasses.length > 6 && (
+                  <p className="text-xs text-text-muted">+ {assetClasses.length - 6} more asset classes</p>
+                )}
+              </div>
+            </div>
+            <div className={`rounded-xl border p-4 ${hasGaps ? 'border-yellow/15 bg-yellow/5' : 'border-green/15 bg-green/5'}`}>
+              <p className={`text-xs font-semibold uppercase tracking-wider mb-2 ${hasGaps ? 'text-yellow' : 'text-green'}`}>
+                {hasGaps ? 'What is missing' : 'Completeness'}
+              </p>
+              <div className="space-y-1">
+                {missing.length > 0 && (
+                  <p className="text-sm text-text-secondary">
+                    {formatMetricList(missing)} not found in reviewed documents
+                  </p>
+                )}
+                {liveAssessment.isWeakMatch && (
+                  <p className="text-sm text-text-secondary">{liveAssessment.detail}</p>
+                )}
+                {!hasGaps && (
+                  <p className="text-sm text-text-secondary">All requested metrics found in the selected report.</p>
+                )}
+                <p className="text-xs text-text-muted mt-1">
+                  {metricTypesFound.length} metric type{metricTypesFound.length === 1 ? '' : 's'} across {assetClasses.length} asset class{assetClasses.length === 1 ? '' : 'es'} from {documentCount} document{documentCount === 1 ? '' : 's'}
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null;
+      })()}
 
       {/* Summary Stats */}
       <div className="grid grid-cols-4 gap-4 mb-6">
         {[
-          { value: metricsCount, label: 'metrics extracted', sub: `from ${documentCount} document${documentCount === 1 ? '' : 's'}`, icon: FileText },
+          liveAssessment?.focusMetricTypes.length
+            ? {
+                value: matchedFocusMetricTypeCount,
+                label: `of ${liveAssessment.focusMetricTypes.length} target metrics`,
+                sub: `${metricsCount} total rows from ${documentCount} document${documentCount === 1 ? '' : 's'}`,
+                icon: FileText,
+              }
+            : { value: metricsCount, label: 'metrics extracted', sub: `from ${documentCount} document${documentCount === 1 ? '' : 's'}`, icon: FileText },
           { value: secondaryCount, label: secondaryStat.label, sub: secondaryStat.sub, icon: DollarSign },
           { value: signalsCount, label: 'intelligence signals', sub: liveAssessment?.isWeakMatch ? 'hidden until relevance improves' : 'actionable insights', icon: Zap },
           { value: fundsCount, label: 'pension funds scanned', sub: isRealResult ? `from this ${resultModeLabel.toLowerCase()}` : 'US public funds', icon: BarChart3 },

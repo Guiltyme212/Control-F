@@ -117,6 +117,22 @@ export function metricMatchesRequestedFocus(
   );
 }
 
+const PROXY_INDICATORS = [
+  'multiple of cost',
+  'moc',
+  'proxy',
+  'equivalent',
+  'approximat',
+  'estimated',
+  'implied',
+];
+
+export function isProxyMetricMatch(metric: Pick<Metric, 'metric' | 'evidence' | 'value'>): boolean {
+  const evidence = (metric.evidence || '').toLowerCase();
+  const value = (metric.value || '').toLowerCase();
+  return PROXY_INDICATORS.some((indicator) => evidence.includes(indicator) || value.includes(indicator));
+}
+
 export function getFocusKeywords(query: string, intents: SearchIntent[] = []): string[] {
   const normalizedQuery = normalize(query);
   const requestedMetrics = getRequestedMetricTypes(query);

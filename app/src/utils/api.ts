@@ -79,6 +79,8 @@ Rules:
 8. Capture target fund size and target returns
 9. When a search focus is provided, extract ALL rows for each requested metric type (e.g. if the user asks for IRR, TVPI, DPI, and NAV — extract every row for all four). Only skip unrelated tables that do not contain ANY of the requested metrics.`;
 
+
+
 const INTENT_KEYWORDS: Record<SearchIntent, string[]> = {
   commitment: [
     'commitment',
@@ -132,6 +134,7 @@ interface FirecrawlSearchItem {
 
 interface ExtractionOptions {
   focusQuery?: string;
+  extractionMode?: 'broad' | 'focused';
 }
 
 async function fetchWithTimeout(
@@ -217,14 +220,14 @@ function scoreDocumentTypeFit(
     if (documentType === 'minutes') score += 7;
     if (documentType === 'investment') score += 5;
     if (documentType === 'performance') score -= 3;
-    if (documentType === 'financial') score -= 6;
+    if (documentType === 'financial') score -= 10;
     if (documentType === 'general') score -= 8;
   }
 
   if (intents.includes('performance')) {
     if (documentType === 'performance') score += 8;
     if (documentType === 'investment' || documentType === 'financial') score += 3;
-    if (documentType === 'meeting' || documentType === 'minutes') score -= 4;
+    if (documentType === 'meeting' || documentType === 'minutes') score -= 12;
     if (documentType === 'general') score -= 2;
   }
 
@@ -245,6 +248,38 @@ function scoreDocumentTypeFit(
   }
 
   return score;
+}
+
+function getDocumentFamilyPreferences(
+  intents: SearchIntent[],
+  requestedMetricTypes: string[],
+): { preferred: Set<string>; penalized: Set<string> } {
+  const preferred = new Set<string>();
+  const penalized = new Set<string>();
+  const hasPerformanceMultiples = requestedMetricTypes.some((m) =>
+    ['IRR', 'TVPI', 'DPI'].includes(m),
+  );
+  const hasNavOnly = requestedMetricTypes.includes('NAV') && !hasPerformanceMultiples;
+  const hasCommitmentOnly = intents.includes('commitment') && !intents.includes('performance');
+
+  if (hasPerformanceMultiples) {
+    preferred.add('performance');
+    preferred.add('investment');
+    penalized.add('meeting');
+    penalized.add('minutes');
+  } else if (hasNavOnly) {
+    preferred.add('performance');
+    preferred.add('financial');
+    preferred.add('investment');
+    penalized.add('minutes');
+  } else if (hasCommitmentOnly) {
+    preferred.add('meeting');
+    preferred.add('minutes');
+    preferred.add('investment');
+    penalized.add('financial');
+  }
+
+  return { preferred, penalized };
 }
 
 function scoreIntentSignals(text: string, intents: SearchIntent[]): number {
@@ -502,12 +537,28 @@ export async function discoverSourceCandidates(
   pensionFunds: string[] = [],
 ): Promise<SourceSearchCandidate[]> {
   const intents = detectSearchIntents(query);
+  const requestedMetrics = getRequestedMetricTypes(query);
+  const familyPrefs = getDocumentFamilyPreferences(intents, requestedMetrics);
   const pensionFundFilter = new Set(pensionFunds.map((fund) => normalizeForSearch(fund)));
   const eligibleEntries = sourceRegistry
     .filter((entry) => pensionFundFilter.size === 0 || pensionFundFilter.has(normalizeForSearch(entry.pensionFund)))
     .map((entry) => ({ entry, baseScore: scoreRegistryEntry(entry, query, intents) }))
     .sort((a, b) => b.baseScore - a.baseScore)
     .slice(0, SOURCE_SEARCH_FANOUT);
+
+  // Hard-route: if top entry is penalized but a preferred entry exists, promote it
+  if (familyPrefs.preferred.size > 0 && eligibleEntries.length > 1) {
+    const topEntry = eligibleEntries[0];
+    if (familyPrefs.penalized.has(topEntry.entry.documentType)) {
+      const preferredIndex = eligibleEntries.findIndex(
+        (e) => familyPrefs.preferred.has(e.entry.documentType) && e.baseScore > topEntry.baseScore * 0.4,
+      );
+      if (preferredIndex > 0) {
+        const [promoted] = eligibleEntries.splice(preferredIndex, 1);
+        eligibleEntries.unshift(promoted);
+      }
+    }
+  }
 
   const searchedCandidates = await Promise.all(
     eligibleEntries.map(async ({ entry, baseScore }) => {
@@ -993,6 +1044,9 @@ export interface PdfCandidate {
   url: string;
   filename: string;
   sourceLabel: string;
+  previewScore?: number;
+  previewMatchedMetrics?: string[];
+  previewNegativeSignals?: string[];
 }
 
 export async function selectBestPdfWithLLM(
@@ -1004,7 +1058,19 @@ export async function selectBestPdfWithLLM(
   if (candidates.length === 1) return candidates;
 
   const numberedList = candidates
-    .map((c, i) => `${i + 1}. ${c.filename} (from: ${c.sourceLabel})`)
+    .map((c, i) => {
+      let line = `${i + 1}. ${c.filename} (from: ${c.sourceLabel})`;
+      if (c.previewScore != null) {
+        line += ` — Preview score: ${c.previewScore}`;
+        if (c.previewMatchedMetrics?.length) {
+          line += `, matched: ${c.previewMatchedMetrics.join(', ')}`;
+        }
+        if (c.previewNegativeSignals?.length) {
+          line += `, warnings: ${c.previewNegativeSignals.join(', ')}`;
+        }
+      }
+      return line;
+    })
     .join('\n');
 
   const requestedMetrics = getRequestedMetricTypes(query);
@@ -1152,6 +1218,9 @@ export async function extractMetricsFromPdfUrl(
   const hasSpecificMetricFocus = requestedMetricTypes.some((metricType) =>
     ['IRR', 'TVPI', 'DPI', 'NAV'].includes(metricType),
   );
+  const hasSpecificFocus = requestedMetricTypes.some((m) => ['IRR', 'TVPI', 'DPI', 'NAV', 'AUM'].includes(m));
+  const effectiveExtractionMode = options.extractionMode ?? (hasSpecificFocus ? 'focused' : 'broad');
+  const effectiveOptions = { ...options, extractionMode: effectiveExtractionMode };
   const shouldSmartFilter =
     info.totalPages > SMART_FILTER_THRESHOLD ||
     (hasFocusQuery && info.totalPages > FOCUSED_FILTER_THRESHOLD) ||
@@ -1167,7 +1236,7 @@ export async function extractMetricsFromPdfUrl(
     log('Small document — sending directly to Claude...');
     const base64 = await fetchPdfChunk(pdfUrl, 0);
     log('Extracting financial metrics...', 'info');
-    const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, options);
+    const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, effectiveOptions);
     log(`Found ${result.metrics.length} metrics`, 'done');
     return result;
   }
@@ -1195,7 +1264,7 @@ export async function extractMetricsFromPdfUrl(
   if (relevantPages.length === 0) {
     log('No financial keywords found — using first chunk as fallback', 'info');
     const base64 = await fetchPdfChunk(pdfUrl, 0);
-    return extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, options);
+    return extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, effectiveOptions);
   }
 
   log(`Found ${relevantPages.length} relevant pages (of ${info.totalPages})`, 'done');
@@ -1220,7 +1289,7 @@ export async function extractMetricsFromPdfUrl(
   // Send to Claude
   log('Sending to Claude for extraction...');
   const result = await extractChunkWithPageMap(
-    subsetBase64, apiKey, pdfFilename, relevantPages, info.totalPages, options,
+    subsetBase64, apiKey, pdfFilename, relevantPages, info.totalPages, effectiveOptions,
   );
   log(`Extracted ${result.metrics.length} metrics`, 'done');
 
@@ -1250,6 +1319,16 @@ export async function fetchPdfPreviewSubset(
   }
 
   return new Uint8Array(await response.arrayBuffer());
+}
+
+export function deduplicateMetrics(metrics: Metric[]): Metric[] {
+  const seen = new Set<string>();
+  return metrics.filter((m) => {
+    const key = `${m.metric}|${m.fund}|${m.asset_class}|${m.value}`.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export async function scrapeUrlForPdfs(url: string): Promise<ScrapedPdfLink[]> {
