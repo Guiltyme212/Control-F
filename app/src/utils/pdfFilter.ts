@@ -54,6 +54,91 @@ const PREVIEW_NEGATIVE_SIGNAL_PATTERNS: Array<{ label: string; pattern: RegExp }
   { label: 'basic financial report', pattern: /\b(acfr|annual comprehensive financial report|annual financial report)\b/i },
 ];
 
+const BOARD_PACKET_SIGNALS = [
+  'board meeting',
+  'board of trustees',
+  'board packet',
+  'agenda',
+  'minutes',
+  'committee',
+  'consent',
+  'resolution',
+  'action item',
+];
+
+const PERFORMANCE_DOCUMENT_SIGNALS = [
+  'performance report',
+  'performance review',
+  'portfolio report',
+  'quarterly review',
+  'quarterly performance',
+  'combined portfolio',
+  'private markets',
+  'since inception',
+  'benchmark',
+  'net return',
+  'irr',
+  'tvpi',
+  'dpi',
+];
+
+const FINANCIAL_STATEMENT_SIGNALS = [
+  'financial statements',
+  'annual financial report',
+  'annual comprehensive financial report',
+  'statement of fiduciary net position',
+  'statement of changes in fiduciary net position',
+  'net position',
+  'balance sheet',
+  'income statement',
+  'cash flow statement',
+  'net assets',
+];
+
+const ALLOCATION_HEAVY_SIGNALS = [
+  'asset allocation',
+  'allocation',
+  'total fund',
+  'market value',
+  'alternative investments',
+];
+
+const SPECIFIC_PERFORMANCE_METRICS = ['irr', 'tvpi', 'dpi'];
+
+const COMMITMENT_DOCUMENT_SIGNALS = [
+  'commitment',
+  'commitments',
+  'approved',
+  'approval',
+  'co-investment',
+  'capital call',
+  'new investment',
+  'million',
+  'billion',
+  'termination',
+  'terminated',
+  'allocation recommendation',
+  'investment recommendation',
+];
+
+function collectSignals(text: string, signals: string[]): string[] {
+  return signals.filter((signal) => text.includes(signal));
+}
+
+function analyzeQueryContext(queryContext?: string) {
+  const normalized = (queryContext || '').toLowerCase();
+
+  return {
+    normalized,
+    wantsPerformance: normalized.includes('performance'),
+    wantsSpecificPerformanceMetrics: SPECIFIC_PERFORMANCE_METRICS.some((metric) => normalized.includes(metric)),
+    wantsBoard: ['board', 'agenda', 'minutes', 'meeting', 'committee'].some((term) => normalized.includes(term)),
+    wantsFinancial: ['financial', 'acfr', 'annual report', 'balance sheet', 'net position'].some((term) => normalized.includes(term)),
+    wantsCommitment: ['commitment', 'commitments', 'investment', 'investments', 'approval', 'approvals', 'co-investment', 'capital call', 'termination', 'terminated']
+      .some((term) => normalized.includes(term)),
+  };
+}
+
 function previewTextMatchesMetricType(text: string, metricType: string): boolean {
   const normalized = text.toLowerCase();
 
@@ -408,6 +493,10 @@ export interface EarlyRejectResult {
   shouldReject: boolean;
   /** Reason for rejection (human-readable) */
   reason: string;
+  /** Stable machine-readable code for logging/debugging */
+  rejectCode?: string;
+  /** Human-readable family hint for the off-target document */
+  documentFamilyHint?: string;
   /** Specific signals detected */
   corporateSignals: string[];
   pensionSignals: string[];
@@ -428,31 +517,125 @@ export function earlyRejectCheck(
   queryContext?: string,
 ): EarlyRejectResult {
   const text = previewText.toLowerCase();
+  const queryProfile = analyzeQueryContext(queryContext);
 
   // Count corporate vs pension signals
   const corporateHits = CORPORATE_SIGNALS.filter((s) => text.includes(s));
   const pensionHits = PENSION_FUND_SIGNALS.filter((s) => text.includes(s));
+  const boardPacketHits = collectSignals(text, BOARD_PACKET_SIGNALS);
+  const performanceHits = collectSignals(text, PERFORMANCE_DOCUMENT_SIGNALS);
+  const financialStatementHits = collectSignals(text, FINANCIAL_STATEMENT_SIGNALS);
+  const allocationHeavyHits = collectSignals(text, ALLOCATION_HEAVY_SIGNALS);
+
+  const buildReject = (params: {
+    rejectCode: string;
+    reason: string;
+    corporateSignals: string[];
+    pensionSignals: string[];
+    confidence: 'high' | 'medium';
+    documentFamilyHint?: string;
+  }): EarlyRejectResult => ({
+    shouldReject: true,
+    reason: params.reason,
+    rejectCode: params.rejectCode,
+    documentFamilyHint: params.documentFamilyHint,
+    corporateSignals: params.corporateSignals,
+    pensionSignals: params.pensionSignals,
+    confidence: params.confidence,
+  });
+
+  const signalsSummary = (values: string[]) => values.length > 0 ? values.slice(0, 4).join(', ') : 'none';
 
   // Strong corporate signal with no pension signal = reject
   if (corporateHits.length >= 3 && pensionHits.length === 0) {
-    return {
-      shouldReject: true,
-      reason: `Document appears to be corporate financials (${corporateHits.length} corporate signals, 0 pension signals). Likely a manager/company annual report, not a pension-fund document.`,
+    return buildReject({
+      rejectCode: 'CORPORATE_FINANCIALS',
+      reason: `REJECT[CORPORATE_FINANCIALS]: preview looks like a manager/company annual report (${corporateHits.length} corporate signals, 0 pension signals).`,
       corporateSignals: corporateHits,
       pensionSignals: pensionHits,
       confidence: 'high',
-    };
+      documentFamilyHint: 'corporate annual report',
+    });
   }
 
   // Moderate corporate signal (2+) with very few pension signals
   if (corporateHits.length >= 2 && pensionHits.length <= 1) {
-    return {
-      shouldReject: true,
-      reason: `Document has strong corporate financial indicators (${corporateHits.slice(0, 3).join(', ')}). Unlikely to contain pension-fund metrics.`,
+    return buildReject({
+      rejectCode: 'CORPORATE_FINANCIALS',
+      reason: `REJECT[CORPORATE_FINANCIALS]: strong corporate financial indicators (${signalsSummary(corporateHits)}).`,
       corporateSignals: corporateHits,
       pensionSignals: pensionHits,
       confidence: 'medium',
-    };
+      documentFamilyHint: 'corporate financial report',
+    });
+  }
+
+  const performanceQuery = queryProfile.wantsPerformance || queryProfile.wantsSpecificPerformanceMetrics;
+  const boardPacketLooksOffTarget = queryProfile.wantsSpecificPerformanceMetrics
+    && boardPacketHits.length >= 2
+    && performanceHits.length === 0;
+  const financialStatementLooksOffTarget = performanceQuery
+    && financialStatementHits.length >= 2
+    && performanceHits.length === 0;
+  const allocationHeavyLooksOffTarget = queryProfile.wantsSpecificPerformanceMetrics
+    && allocationHeavyHits.length >= 2
+    && performanceHits.length === 0;
+
+  if (boardPacketLooksOffTarget) {
+    return buildReject({
+      rejectCode: 'PERFORMANCE_BOARD_PACKET',
+      reason: `REJECT[PERFORMANCE_BOARD_PACKET]: performance-multiple query landed on a board/minutes packet (${signalsSummary(boardPacketHits)}), with no direct performance signals in the preview.`,
+      corporateSignals: boardPacketHits,
+      pensionSignals: pensionHits,
+      confidence: 'medium',
+      documentFamilyHint: 'board / minutes packet',
+    });
+  }
+
+  if (financialStatementLooksOffTarget) {
+    return buildReject({
+      rejectCode: 'PERFORMANCE_FINANCIAL_STATEMENT',
+      reason: `REJECT[PERFORMANCE_FINANCIAL_STATEMENT]: preview looks like an annual report / financial statement family (${signalsSummary(financialStatementHits)}), with no direct performance metrics in the preview.`,
+      corporateSignals: financialStatementHits,
+      pensionSignals: pensionHits,
+      confidence: 'high',
+      documentFamilyHint: 'financial statement / annual report',
+    });
+  }
+
+  if (allocationHeavyLooksOffTarget) {
+    return buildReject({
+      rejectCode: 'PERFORMANCE_ALLOCATION_ONLY',
+      reason: `REJECT[PERFORMANCE_ALLOCATION_ONLY]: performance query landed on an allocation-heavy summary (${signalsSummary(allocationHeavyHits)}), but IRR/TVPI/DPI are absent from the preview.`,
+      corporateSignals: allocationHeavyHits,
+      pensionSignals: pensionHits,
+      confidence: 'medium',
+      documentFamilyHint: 'allocation summary',
+    });
+  }
+
+  // Commitment query landing on an agenda/minutes with no actual commitment content
+  const commitmentHits = collectSignals(text, COMMITMENT_DOCUMENT_SIGNALS);
+  const commitmentOnAgenda = queryProfile.wantsCommitment
+    && !queryProfile.wantsBoard
+    && boardPacketHits.length >= 2
+    && commitmentHits.length === 0;
+  // Also catch: query wants both board + commitment, but doc is pure agenda (no dollar amounts, no approvals)
+  const commitmentOnPureAgenda = queryProfile.wantsCommitment
+    && queryProfile.wantsBoard
+    && boardPacketHits.length >= 2
+    && commitmentHits.length === 0
+    && !text.includes('$');
+
+  if (commitmentOnAgenda || commitmentOnPureAgenda) {
+    return buildReject({
+      rejectCode: 'COMMITMENT_AGENDA_ONLY',
+      reason: `REJECT[COMMITMENT_AGENDA_ONLY]: commitment query landed on a board agenda/minutes (${signalsSummary(boardPacketHits)}), but no commitment-relevant content (approvals, dollar amounts, fund names) found in preview.`,
+      corporateSignals: boardPacketHits,
+      pensionSignals: pensionHits,
+      confidence: 'medium',
+      documentFamilyHint: 'board agenda / minutes',
+    });
   }
 
   // Entity mismatch check: if the query names a specific pension fund,
@@ -469,13 +652,14 @@ export function earlyRejectCheck(
 
     if (queryMentionsFund && corporateHits.length >= 1 && pensionHits.length === 0) {
       // Query mentions a pension fund, but the doc looks corporate
-      return {
-        shouldReject: true,
-        reason: `Query targets a pension fund but this document appears to be corporate financials (no pension-fund signals found).`,
+      return buildReject({
+        rejectCode: 'ENTITY_MISMATCH',
+        reason: `REJECT[ENTITY_MISMATCH]: query targets a pension fund but the preview looks like corporate financials (no pension-fund signals found).`,
         corporateSignals: corporateHits,
         pensionSignals: pensionHits,
         confidence: 'medium',
-      };
+        documentFamilyHint: 'entity mismatch',
+      });
     }
   }
 
@@ -483,6 +667,8 @@ export function earlyRejectCheck(
   return {
     shouldReject: false,
     reason: '',
+    rejectCode: undefined,
+    documentFamilyHint: undefined,
     corporateSignals: corporateHits,
     pensionSignals: pensionHits,
     confidence: 'low',

@@ -10,6 +10,65 @@ import type {
 } from './types';
 
 /* ------------------------------------------------------------------ */
+/*  Readable labels and summary helpers                                */
+/* ------------------------------------------------------------------ */
+
+export function formatGradeLabel(grade: CaseScore['grade']): string {
+  const labels: Record<CaseScore['grade'], string> = {
+    pass: 'Pass',
+    partial: 'Partial',
+    weak: 'Weak',
+    'rejected-correctly': 'Rejected correctly',
+    'rejected-incorrectly': 'Rejected incorrectly',
+    fail: 'Fail',
+  };
+
+  return labels[grade];
+}
+
+export interface SummaryStats {
+  positiveCases: number;
+  negativeCases: number;
+  averageCostUsd: number;
+  averageElapsedSec: number;
+}
+
+export function getSummaryStats(summary: EvalRunSummary): SummaryStats {
+  const positiveCases = summary.positiveCases ?? summary.scores.filter((score) => !score.caseId.startsWith('N')).length;
+  const negativeCases = summary.negativeCases ?? summary.scores.filter((score) => score.caseId.startsWith('N')).length;
+  const averageCostUsd = summary.averageCostUsd ?? summary.totalCostUsd / Math.max(summary.casesRun, 1);
+  const averageElapsedSec = summary.averageElapsedSec ?? summary.totalElapsedSec / Math.max(summary.casesRun, 1);
+
+  return {
+    positiveCases,
+    negativeCases,
+    averageCostUsd,
+    averageElapsedSec,
+  };
+}
+
+export interface NegativeControlOutcome {
+  expected: string;
+  observed: string;
+  result: string;
+}
+
+export function describeNegativeControlOutcome(score: CaseScore): NegativeControlOutcome {
+  const rejected = score.grade === 'rejected-correctly';
+  const forbiddenCount = score.forbiddenMetricsFound.length;
+
+  return {
+    expected: 'Reject the document before extraction',
+    observed: rejected
+      ? 'Rejected before Claude extraction'
+      : forbiddenCount > 0
+        ? `Extraction continued and surfaced ${forbiddenCount} off-target metric(s)`
+        : 'Extraction continued, but no forbidden metrics surfaced',
+    result: formatGradeLabel(score.grade),
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Document family detection                                          */
 /* ------------------------------------------------------------------ */
 
@@ -268,7 +327,7 @@ export function scoreCase(
     if (wasEarlyRejected) {
       grade = 'rejected-correctly';
     } else {
-      grade = negativePassed ? 'pass' : 'fail';
+      grade = 'rejected-incorrectly';
     }
   } else if (wasEarlyRejected) {
     // Positive case got rejected — that's wrong
@@ -318,18 +377,27 @@ export function buildRunSummary(
   scores: CaseScore[],
   runId?: string,
 ): EvalRunSummary {
+  const positiveCases = scores.filter((score) => !score.caseId.startsWith('N')).length;
+  const negativeCases = scores.filter((score) => score.caseId.startsWith('N')).length;
+  const totalCostUsd = scores.reduce((sum, s) => sum + (s.costUsd ?? 0), 0);
+  const totalElapsedSec = scores.reduce((sum, s) => sum + (s.elapsedSec ?? 0), 0);
+
   return {
     runId: runId ?? `eval-${Date.now()}`,
     timestamp: new Date().toISOString(),
     casesRun: scores.length,
-    passed: scores.filter((s) => s.grade === 'pass').length,
+    positiveCases,
+    negativeCases,
+    passed: scores.filter((s) => s.passed).length,
     partial: scores.filter((s) => s.grade === 'partial').length,
     weak: scores.filter((s) => s.grade === 'weak').length,
     rejectedCorrectly: scores.filter((s) => s.grade === 'rejected-correctly').length,
     rejectedIncorrectly: scores.filter((s) => s.grade === 'rejected-incorrectly').length,
-    failed: scores.filter((s) => s.grade === 'fail').length,
-    totalCostUsd: scores.reduce((sum, s) => sum + (s.costUsd ?? 0), 0),
-    totalElapsedSec: scores.reduce((sum, s) => sum + (s.elapsedSec ?? 0), 0),
+    failed: scores.filter((s) => !s.passed).length,
+    totalCostUsd,
+    averageCostUsd: totalCostUsd / Math.max(scores.length, 1),
+    totalElapsedSec,
+    averageElapsedSec: totalElapsedSec / Math.max(scores.length, 1),
     scores,
   };
 }
@@ -345,6 +413,8 @@ export function formatReport(summary: EvalRunSummary): string {
   const lines: string[] = [];
   const divider = '═'.repeat(70);
   const thinDivider = '─'.repeat(70);
+  const stats = getSummaryStats(summary);
+  const positivePassing = summary.scores.filter((score) => !score.caseId.startsWith('N') && score.passed).length;
 
   lines.push(divider);
   lines.push(`  CONTROL F EVALUATION REPORT`);
@@ -352,19 +422,16 @@ export function formatReport(summary: EvalRunSummary): string {
   lines.push(`  Time: ${summary.timestamp}`);
   lines.push(divider);
   lines.push('');
-  lines.push(`  RESULTS:  ${summary.passed} passed  |  ${summary.partial} partial  |  ${summary.failed} failed  /  ${summary.casesRun} total`);
-  lines.push(`  COST:     $${summary.totalCostUsd.toFixed(4)}`);
-  lines.push(`  TIME:     ${summary.totalElapsedSec.toFixed(1)}s`);
+  lines.push(`  OVERALL:  ${summary.passed}/${summary.casesRun} passing`);
+  lines.push(`  POSITIVE CASES: ${positivePassing}/${stats.positiveCases} passing  |  ${summary.partial} partial  |  ${summary.weak} weak  |  ${summary.failed} not passing`);
+  lines.push(`  NEGATIVE CONTROLS: ${summary.rejectedCorrectly}/${stats.negativeCases} rejected correctly  |  ${summary.rejectedIncorrectly} rejected incorrectly`);
+  lines.push(`  COST:     $${summary.totalCostUsd.toFixed(4)} total  |  $${stats.averageCostUsd.toFixed(4)} avg/case`);
+  lines.push(`  TIME:     ${summary.totalElapsedSec.toFixed(1)}s total  |  ${stats.averageElapsedSec.toFixed(1)}s avg/case`);
   lines.push('');
   lines.push(thinDivider);
 
   for (const score of summary.scores) {
-    const gradeLabels: Record<string, string> = {
-      pass: 'PASS', partial: 'PART', weak: 'WEAK',
-      'rejected-correctly': 'REJ-OK', 'rejected-incorrectly': 'REJ-BAD', fail: 'FAIL',
-    };
-    const icon = gradeLabels[score.grade] ?? score.grade.toUpperCase();
-    const badge = `[${icon}]`;
+    const badge = `[${formatGradeLabel(score.grade)}]`;
 
     lines.push(`  ${badge}  ${score.caseId}: ${score.caseName}`);
     lines.push(`         Query: "${score.query}"`);
@@ -373,6 +440,13 @@ export function formatReport(summary: EvalRunSummary): string {
 
     if (score.costUsd !== undefined) {
       lines.push(`         Cost: $${score.costUsd.toFixed(4)} | ${score.inputTokens ?? 0} in / ${score.outputTokens ?? 0} out | ${score.elapsedSec?.toFixed(1) ?? '?'}s`);
+    }
+
+    if (score.caseId.startsWith('N')) {
+      const negativeOutcome = describeNegativeControlOutcome(score);
+      lines.push(`         Expected: ${negativeOutcome.expected}`);
+      lines.push(`         Observed: ${negativeOutcome.observed}`);
+      lines.push(`         Result: ${negativeOutcome.result}`);
     }
 
     // Show metric details

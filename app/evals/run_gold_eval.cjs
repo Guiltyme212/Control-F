@@ -446,7 +446,7 @@ function scoreCase(goldCase, result) {
 
   let grade;
   if (goldCase.documentFamily === 'negative-control') {
-    grade = forbiddenFound.length === 0 ? 'PASS' : 'FAIL';
+    grade = result.earlyRejected ? 'REJECTED_CORRECTLY' : 'REJECTED_INCORRECTLY';
   } else if (total === 0) {
     grade = 'PASS';
   } else if (found === total) {
@@ -454,7 +454,7 @@ function scoreCase(goldCase, result) {
   } else if (found > 0 && goldCase.partialAcceptable) {
     grade = 'PARTIAL';
   } else if (found > 0) {
-    grade = 'PARTIAL';
+    grade = 'WEAK';
   } else {
     grade = 'FAIL';
   }
@@ -538,7 +538,7 @@ async function main() {
         const isNeg = gc.documentFamily === 'negative-control';
         allResults.push({
           caseId: gc.id, caseName: gc.name,
-          grade: isNeg ? 'PASS' : 'FAIL',
+          grade: isNeg ? 'REJECTED_CORRECTLY' : 'REJECTED_INCORRECTLY',
           found: 0, total: gc.expectedMetrics.length,
           metricMatches: [], forbiddenFound: [],
           metrics: [], costUsd: 0, elapsedSec: 0,
@@ -559,7 +559,13 @@ async function main() {
       allResults.push(score);
 
       // Print result
-      const icon = score.grade === 'PASS' ? '[PASS]' : score.grade === 'PARTIAL' ? '[PART]' : '[FAIL]';
+      const icon =
+        score.grade === 'PASS' ? '[PASS]'
+          : score.grade === 'PARTIAL' ? '[PART]'
+            : score.grade === 'WEAK' ? '[WEAK]'
+              : score.grade === 'REJECTED_CORRECTLY' ? '[REJ-OK]'
+                : score.grade === 'REJECTED_INCORRECTLY' ? '[REJ-BAD]'
+                  : '[FAIL]';
       console.log(`  ${icon} ${score.found}/${score.total} metrics matched`);
 
       for (const mm of score.metricMatches) {
@@ -586,14 +592,24 @@ async function main() {
 
   const passed = allResults.filter(r => r.grade === 'PASS').length;
   const partial = allResults.filter(r => r.grade === 'PARTIAL').length;
+  const weak = allResults.filter(r => r.grade === 'WEAK').length;
+  const rejectedCorrectly = allResults.filter(r => r.grade === 'REJECTED_CORRECTLY').length;
+  const rejectedIncorrectly = allResults.filter(r => r.grade === 'REJECTED_INCORRECTLY').length;
   const failed = allResults.filter(r => r.grade === 'FAIL' || r.grade === 'ERROR').length;
+  const avgCost = allResults.length > 0 ? totalCost / allResults.length : 0;
 
-  console.log(`  PASS: ${passed}  |  PARTIAL: ${partial}  |  FAIL: ${failed}  /  ${allResults.length} total`);
-  console.log(`  Total cost: $${totalCost.toFixed(4)}`);
+  console.log(`  PASS: ${passed}  |  PARTIAL: ${partial}  |  WEAK: ${weak}  |  REJ-OK: ${rejectedCorrectly}  |  REJ-BAD: ${rejectedIncorrectly}  |  FAIL: ${failed}  /  ${allResults.length} total`);
+  console.log(`  Total cost: $${totalCost.toFixed(4)}  |  Avg/case: $${avgCost.toFixed(4)}`);
   console.log();
 
   for (const r of allResults) {
-    const icon = r.grade === 'PASS' ? 'PASS' : r.grade === 'PARTIAL' ? 'PART' : 'FAIL';
+    const icon =
+      r.grade === 'PASS' ? 'PASS'
+        : r.grade === 'PARTIAL' ? 'PART'
+          : r.grade === 'WEAK' ? 'WEAK'
+            : r.grade === 'REJECTED_CORRECTLY' ? 'REJ-OK'
+              : r.grade === 'REJECTED_INCORRECTLY' ? 'REJ-BAD'
+                : 'FAIL';
     console.log(`  [${icon}]  ${r.caseId}: ${r.caseName}`);
   }
 
@@ -618,8 +634,23 @@ async function main() {
     console.log(`  Previous: ${prevRun.timestamp}`);
     console.log('─'.repeat(60));
 
-    const prevPassed = prevRun.passed ?? 0;
-    const prevCost = prevRun.totalCost ?? 0;
+    const prevResults = Array.isArray(prevRun.results) ? prevRun.results : [];
+    const prevPassed = prevResults.length > 0
+      ? prevResults.filter(r => !String(r.caseId).startsWith('N') && r.grade === 'PASS').length
+      : (prevRun.passed ?? 0);
+    const prevPartial = prevResults.length > 0
+      ? prevResults.filter(r => !String(r.caseId).startsWith('N') && r.grade === 'PARTIAL').length
+      : (prevRun.partial ?? 0);
+    const prevWeak = prevResults.length > 0
+      ? prevResults.filter(r => !String(r.caseId).startsWith('N') && r.grade === 'WEAK').length
+      : (prevRun.weak ?? 0);
+    const prevRejectedCorrectly = prevResults.length > 0
+      ? prevResults.filter(r => r.grade === 'REJECTED_CORRECTLY').length
+      : (prevRun.rejectedCorrectly ?? 0);
+    const prevRejectedIncorrectly = prevResults.length > 0
+      ? prevResults.filter(r => r.grade === 'REJECTED_INCORRECTLY').length
+      : (prevRun.rejectedIncorrectly ?? 0);
+    const prevCost = prevRun.totalCostUsd ?? prevRun.totalCost ?? 0;
     const prevCases = prevRun.casesRun ?? 0;
     const prevAvgCost = prevCases > 0 ? prevCost / prevCases : 0;
     const currAvgCost = allResults.length > 0 ? totalCost / allResults.length : 0;
@@ -631,7 +662,8 @@ async function main() {
       return `  (${arrow}${diff.toFixed(unit === '$' ? 4 : 0)}${unit})`;
     };
 
-    console.log(`  Pass rate:  ${passed}/${allResults.length}  vs  ${prevPassed}/${prevCases}${delta(passed, prevPassed)}`);
+    console.log(`  Positive quality: PASS ${passed} vs ${prevPassed}${delta(passed, prevPassed)}  |  PARTIAL ${partial} vs ${prevPartial}${delta(partial, prevPartial)}  |  WEAK ${weak} vs ${prevWeak}${delta(weak, prevWeak)}`);
+    console.log(`  Negative controls: REJ-OK ${rejectedCorrectly} vs ${prevRejectedCorrectly}${delta(rejectedCorrectly, prevRejectedCorrectly)}  |  REJ-BAD ${rejectedIncorrectly} vs ${prevRejectedIncorrectly}${delta(rejectedIncorrectly, prevRejectedIncorrectly)}`);
     console.log(`  Total cost: $${totalCost.toFixed(4)}  vs  $${prevCost.toFixed(4)}${delta(totalCost, prevCost, '$')}`);
     console.log(`  Avg/case:   $${currAvgCost.toFixed(4)}  vs  $${prevAvgCost.toFixed(4)}${delta(currAvgCost, prevAvgCost, '$')}`);
 
@@ -662,8 +694,12 @@ async function main() {
   fs.writeFileSync(outFile, JSON.stringify({
     timestamp: new Date().toISOString(),
     casesRun: allResults.length,
-    passed, partial, failed,
+    positiveCases: allResults.filter(r => !String(r.caseId).startsWith('N')).length,
+    negativeCases: allResults.filter(r => String(r.caseId).startsWith('N')).length,
+    passed, partial, weak, rejectedCorrectly, rejectedIncorrectly, failed,
     totalCost,
+    totalCostUsd: totalCost,
+    averageCostUsd: avgCost,
     results: allResults,
   }, null, 2));
   console.log(`\n  Results saved to: ${outFile}`);

@@ -1,0 +1,125 @@
+{
+  "id": "run-1775444431625",
+  "timestamp": "2026-04-06T03:00:31.625Z",
+  "query": "PSERS new fund commitments and board approvals",
+  "fund": "PSERS",
+  "selected_source": {
+    "label": "Board of Trustees Meetings",
+    "document_type": "meeting",
+    "url": "https://www.pa.gov/agencies/psers/board-of-trustees/board-of-trustees-meetings",
+    "score": 74,
+    "matched_keywords": [
+      "board meetings",
+      "agenda",
+      "minutes",
+      "investment committee",
+      "board materials",
+      "commitment"
+    ]
+  },
+  "selected_pdf": {
+    "filename": "2026.01.09 pserb investment committee meeting minutes signed.pdf",
+    "source_label": "Board of Trustees Meetings",
+    "preview_score": null,
+    "preview_negative_signals": []
+  },
+  "retry_pdf": null,
+  "selected_pdfs": [
+    {
+      "url": "https://www.pa.gov/content/dam/copapwp-pagov/en/psers/documents/board3/minutes/2026-minutes/2026.01.09%20pserb%20investment%20committee%20meeting%20minutes%20signed.pdf",
+      "filename": "2026.01.09 pserb investment committee meeting minutes signed.pdf",
+      "sourceLabel": "Board of Trustees Meetings",
+      "status": "extracted",
+      "selectionRole": "selected",
+      "selectionReason": "initial selection",
+      "previewScore": null,
+      "previewNegativeSignals": [],
+      "sourceUrl": "https://www.pa.gov/agencies/psers/board-of-trustees/board-of-trustees-meetings",
+      "previewMatchedMetrics": [],
+      "pagesReviewed": 2,
+      "reviewedPages": [
+        1,
+        2
+      ],
+      "totalPages": 2,
+      "pageSubsetStrategy": "full-document",
+      "costUsd": 0.022206,
+      "elapsedSec": 9.6
+    }
+  ],
+  "skipped_pdfs": [],
+  "reviewed_scope": "1 PDF reviewed",
+  "reviewed_pages": [
+    1,
+    2
+  ],
+  "total_pages": 2,
+  "source_candidates": [
+    {
+      "label": "Board of Trustees Meetings",
+      "url": "https://www.pa.gov/agencies/psers/board-of-trustees/board-of-trustees-meetings",
+      "documentType": "meeting",
+      "score": 74,
+      "matchedKeywords": [
+        "board meetings",
+        "agenda",
+        "minutes",
+        "investment committee",
+        "board materials",
+        "commitment"
+      ]
+    },
+    {
+      "label": "Board Agenda",
+      "url": "https://www.pa.gov/agencies/psers/board-of-trustees#Upcoming_Board_Agenda",
+      "documentType": "meeting",
+      "score": 72,
+      "matchedKeywords": [
+        "board agenda",
+        "upcoming agenda",
+        "new investments",
+        "board materials",
+        "commitment",
+        "commitments"
+      ]
+    },
+    {
+      "label": "Asset Allocation and Performance",
+      "url": "https://www.pa.gov/agencies/psers/transparency/investment-program/psers-asset-allocation-and-performance",
+      "documentType": "performance",
+      "score": 20,
+      "matchedKeywords": [
+        "private markets",
+        "portfolio quarterly",
+        "disclosure report",
+        "combined portfolio",
+        "performance",
+        "irr"
+      ]
+    }
+  ],
+  "metrics": [
+    {
+      "metric": "Commitment",
+      "asset_class": "Infrastructure",
+      "value": "No activity",
+      "page": 2,
+      "evidence": "New Business agenda contained no infrastructure commitment approvals",
+      "confidence": "high"
+    },
+    {
+      "metric": "Commitment",
+      "asset_class": "Private Equity",
+      "value": "No activity",
+      "page": 2,
+      "evidence": "New Business agenda contained no private equity commitment approvals",
+      "confidence": "high"
+    }
+  ],
+  "coverage_score": 0,
+  "completeness_label": "weak",
+  "proxy_hits": [],
+  "cost_usd": 0.022206,
+  "elapsed_sec": 24.401,
+  "documents_used": 1
+}

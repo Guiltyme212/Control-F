@@ -33,10 +33,6 @@ const fail = `${RED}FAIL${RESET}`;
 const na = `${DIM}N/A${RESET}`;
 const warn = `${YELLOW}WARN${RESET}`;
 
-function tag(ok: boolean): string {
-  return ok ? pass : fail;
-}
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------

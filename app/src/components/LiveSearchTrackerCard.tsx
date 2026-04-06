@@ -10,12 +10,12 @@ import {
   Search,
   Sparkles,
 } from 'lucide-react';
-import { deduplicateMetrics, detectSearchIntents, extractMetricsFromPdfUrl, discoverSourceCandidates, fetchPdfPreviewSubset, scrapeUrlForPdfs, selectBestPdfWithLLM, saveRunArtifact } from '../utils/api';
+import { deduplicateMetrics, detectSearchIntents, discoverSourceCandidates, extractMetricsFromPdfUrl, fetchPdfPreviewSubset, saveRunArtifact, scrapeUrlForPdfs, selectBestPdfWithLLM, serverLog } from '../utils/api';
 import type { PdfCandidate } from '../utils/api';
 import { extractPdfPreviewText, scorePreviewText, scoreFreshness, earlyRejectCheck } from '../utils/pdfFilter';
 import { assessLiveResult, computeCoverageScore, shouldAutoRetry } from '../utils/liveResultAssessment';
 import { useAppContext } from '../context/AppContext';
-import type { Metric, Page, PdfLink, PdfScorecard, SearchIntent, Signal, SourceSearchCandidate } from '../data/types';
+import type { Metric, Page, PdfLink, PdfScorecard, ReviewedDocument, SearchIntent, Signal, SourceSearchCandidate } from '../data/types';
 import { getFocusKeywords, getFocusMetricTargets } from '../utils/searchFocus';
 
 interface LiveSearchTrackerCardProps {
@@ -71,8 +71,8 @@ const EMPTY_SOURCE_PROBE_STATES: Record<string, SourceProbeState> = {};
 function softenSignalText(text: string): string {
   return text
     .replace(/\bnot available\b/gi, 'not found in reviewed files')
-    .replace(/\bnot reported in this document\b/gi, 'not found in the selected document')
-    .replace(/\bis not reported\b/gi, 'was not found')
+    .replace(/\bnot reported in this document\b/gi, 'not found in the reviewed documents')
+    .replace(/\bis not reported\b/gi, 'was not found in reviewed documents')
     .replace(/\bdoes not contain\b/gi, 'did not contain');
 }
 
@@ -81,6 +81,41 @@ function mapSignals(signals: { signal_type: string; description: string }[]): Si
     type: softenSignalText(signal.signal_type),
     description: softenSignalText(signal.description),
   }));
+}
+
+function formatReviewScope(count: number): string {
+  return count === 1 ? '1 PDF reviewed' : `${count} PDFs reviewed`;
+}
+
+function buildReviewedDocument(
+  link: PdfLink,
+  sourceLabel: string,
+  status: ReviewedDocument['status'],
+  selectionRole: ReviewedDocument['selectionRole'],
+  previewScore: number | null,
+  previewNegativeSignals: string[],
+  selectionReason: string,
+  extras: Partial<ReviewedDocument> = {},
+): ReviewedDocument {
+  return {
+    url: link.url,
+    filename: link.filename,
+    sourceLabel,
+    status,
+    selectionRole,
+    selectionReason,
+    previewScore,
+    previewNegativeSignals,
+    ...extras,
+  };
+}
+
+function persistLog(message: string, status: string) {
+  fetch('/api/log', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, status }),
+  }).catch(() => {});
 }
 
 function includesAny(text: string, phrases: string[]): boolean {
@@ -267,6 +302,10 @@ function getPreviewBadge(previewState?: PdfPreviewState): { label: string; class
     return { label: 'Preview unavailable', className: 'border-border/70 bg-bg-hover text-text-muted' };
   }
 
+  if (previewState.negativeSignals.some((signal) => signal.startsWith('early-rejected:'))) {
+    return { label: 'Rejected in preview', className: 'border-red/25 bg-red/10 text-red' };
+  }
+
   if (previewState.score >= PDF_PREVIEW_STRONG_THRESHOLD) {
     return { label: 'High confidence', className: 'border-green/25 bg-green/10 text-green-light' };
   }
@@ -351,7 +390,9 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         return `[${elapsed}s]`;
       };
       const addLog = (msg: string, status: 'info' | 'done' | 'error' = 'info') => {
-        logs.push({ message: `${timestamp()} ${msg}`, status });
+        const message = `${timestamp()} ${msg}`;
+        logs.push({ message, status });
+        persistLog(message, status);
         setLiveTracker((current) =>
           current ? { ...current, extractionLogs: [...logs] } : current,
         );
@@ -758,12 +799,71 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
       }
 
       const extractionStartTime = Date.now();
+      let retryPdfUrl: string | null = null;
 
       const selectedPdfLinks = tracker.pdfLinks
         .filter((link) => tracker.selectedPdfUrls.includes(link.url))
         .slice(0, MAX_EXTRACT_PDFS);
       const allMetrics: Metric[] = [];
       const allSignals: Signal[] = [];
+      const reviewedDocumentsByUrl = new Map<string, ReviewedDocument>();
+      let totalCostUsd = 0;
+      const selectedSourceLabel = liveTrackerSelectedSource
+        ? `${liveTrackerSelectedSource.pensionFund} - ${liveTrackerSelectedSource.label}`
+        : 'Live search tracker';
+      const reviewScope = formatReviewScope(selectedPdfLinks.length);
+
+      const appendExtractionLog = (
+        message: string,
+        status: 'info' | 'done' | 'error' = 'info',
+        persistToDisk = true,
+      ) => {
+        const elapsed = ((Date.now() - extractionStartTime) / 1000).toFixed(1);
+        const line = `[${elapsed}s] ${message}`;
+        if (persistToDisk) {
+          persistLog(line, status);
+        }
+        setLiveTracker((current) =>
+          current
+            ? {
+                ...current,
+                extractionLogs: [...current.extractionLogs, { message: line, status }],
+              }
+            : current,
+        );
+      };
+
+      const rememberReviewedDocument = (
+        link: PdfLink,
+        status: ReviewedDocument['status'],
+        selectionRole: ReviewedDocument['selectionRole'],
+        selectionReason: string,
+        options: Partial<ReviewedDocument> = {},
+      ) => {
+        const preview = pdfPreviewStates[link.url];
+        reviewedDocumentsByUrl.set(
+          link.url,
+          buildReviewedDocument(
+            link,
+            liveTrackerSelectedSource?.label ?? '',
+            status,
+            selectionRole,
+            preview?.status === 'ready' ? preview.score : null,
+            preview?.status === 'ready' ? preview.negativeSignals : [],
+            selectionReason,
+            {
+              sourceUrl: liveTrackerSelectedSource?.url ?? '',
+              previewMatchedMetrics: preview?.status === 'ready' ? preview.matchedMetricTypes : [],
+              previewPagesScanned: preview?.status === 'ready' ? preview.pagesScanned : undefined,
+              pagesReviewed: options.reviewedPages?.length,
+              ...options,
+            },
+          ),
+        );
+      };
+
+      appendExtractionLog(`Selected source: ${selectedSourceLabel}`, 'done');
+      appendExtractionLog(`Review scope: ${reviewScope}`, 'done');
 
       for (let index = 0; index < selectedPdfLinks.length; index += 1) {
         const pdfLink = selectedPdfLinks[index];
@@ -778,24 +878,13 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                   total: selectedPdfLinks.length,
                   currentFile: pdfLink.filename,
                 },
-                extractionLogs: [
-                  ...current.extractionLogs,
-                  { message: `Starting ${pdfLink.filename}`, status: 'info' },
-                ],
               }
             : current,
         );
+        appendExtractionLog(`Starting ${pdfLink.filename}`, 'info');
 
         const log = (message: string, status: 'info' | 'done' | 'error' = 'info') => {
-          const elapsed = ((Date.now() - extractionStartTime) / 1000).toFixed(1);
-          setLiveTracker((current) =>
-            current
-              ? {
-                  ...current,
-                  extractionLogs: [...current.extractionLogs, { message: `[${elapsed}s] ${message}`, status }],
-                }
-              : current,
-          );
+          appendExtractionLog(message, status, false);
         };
 
         try {
@@ -808,43 +897,57 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
             focusQuery,
           });
           if (cancelled) return;
+          totalCostUsd += result.costUsd ?? 0;
+          if (result.wasEarlyRejected || result.metadata.document_type === 'rejected') {
+            rememberReviewedDocument(
+              pdfLink,
+              'rejected',
+              'selected',
+              result.skipReason ?? 'preview rejected before extraction',
+              {
+                reviewedPages: result.reviewedPageNumbers,
+                totalPages: result.totalPages,
+                pageSubsetStrategy: result.pageSubsetStrategy,
+                skipReason: result.skipReason,
+                costUsd: result.costUsd,
+                elapsedSec: result.elapsedSec,
+              },
+            );
+            appendExtractionLog(`${pdfLink.filename} was rejected before extraction.`, 'info');
+            continue;
+          }
           allMetrics.push(...result.metrics);
           allSignals.push(...mapSignals(result.signals));
+          rememberReviewedDocument(
+            pdfLink,
+            'extracted',
+            'selected',
+            'initial selection',
+            {
+              reviewedPages: result.reviewedPageNumbers,
+              totalPages: result.totalPages,
+              pageSubsetStrategy: result.pageSubsetStrategy,
+              costUsd: result.costUsd,
+              elapsedSec: result.elapsedSec,
+            },
+          );
         } catch (error) {
           if (cancelled) return;
           const message = error instanceof Error ? error.message : 'Extraction failed';
+          rememberReviewedDocument(pdfLink, 'failed', 'selected', message, { skipReason: message });
           log(`Error: ${message}`, 'error');
         }
       }
 
       if (cancelled) return;
 
-      if (allMetrics.length === 0) {
-        setLiveTracker((current) =>
-          current
-            ? {
-                ...current,
-                status: 'error',
-                errorMessage: 'No metrics were extracted from the selected PDFs.',
-                message: 'No metrics extracted from the selected PDFs.',
-                progress: {
-                  current: 0,
-                  total: 0,
-                  currentFile: '',
-                },
-              }
-            : current,
-        );
-        return;
-      }
-
-      // Auto-retry: if partial coverage and more PDFs available, try next best
+      // Auto-retry: if we found no usable metrics or only partial coverage, try the next best PDF.
       const retryFocusMetrics = getFocusMetricTargets(liveTrackerQuery);
-      let totalDocumentsUsed = selectedPdfLinks.length;
-      if (shouldAutoRetry(allMetrics, retryFocusMetrics, 1) && !cancelled) {
+      if ((allMetrics.length === 0 || shouldAutoRetry(allMetrics, retryFocusMetrics, 1)) && !cancelled) {
         const extractedUrls = new Set(tracker.selectedPdfUrls);
         const nextPdf = tracker.pdfLinks.find((link) => !extractedUrls.has(link.url));
         if (nextPdf) {
+          retryPdfUrl = nextPdf.url;
           const coverage = computeCoverageScore(allMetrics, retryFocusMetrics, liveTrackerAssetClasses);
           setLiveTracker((current) =>
             current
@@ -854,7 +957,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                   extractionLogs: [
                     ...current.extractionLogs,
                     {
-                      message: `Found ${coverage.foundTypes.length} of ${retryFocusMetrics.length} requested metrics — trying next PDF...`,
+                      message: `Found ${coverage.foundTypes.length} of ${retryFocusMetrics.length} requested metrics — retrying ${nextPdf.filename}${coverage.missingTypes.length > 0 ? ` (missing ${coverage.missingTypes.join(', ')})` : ''}.`,
                       status: 'info' as const,
                     },
                   ],
@@ -868,11 +971,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
           );
 
           const retryLog = (message: string, status: 'info' | 'done' | 'error' = 'info') => {
-            setLiveTracker((current) =>
-              current
-                ? { ...current, extractionLogs: [...current.extractionLogs, { message, status }] }
-                : current,
-            );
+            appendExtractionLog(message, status, false);
           };
 
           try {
@@ -881,33 +980,171 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
               liveTrackerMetrics.length ? `Focus metrics: ${liveTrackerMetrics.join(', ')}` : '',
               liveTrackerAssetClasses.length ? `Asset classes: ${liveTrackerAssetClasses.join(', ')}` : '',
             ].filter(Boolean).join(' | ');
+            retryLog(`Retrying with ${nextPdf.filename} after partial coverage`, 'info');
             const retryResult = await extractMetricsFromPdfUrl(nextPdf.url, effectiveApiKey, retryLog, {
               focusQuery: retryFocusQuery,
             });
             if (!cancelled) {
-              allMetrics.push(...retryResult.metrics);
-              allSignals.push(...mapSignals(retryResult.signals));
-              const dedupedMetrics = deduplicateMetrics(allMetrics);
-              allMetrics.length = 0;
-              allMetrics.push(...dedupedMetrics);
-              totalDocumentsUsed += 1;
+              totalCostUsd += retryResult.costUsd ?? 0;
+              if (retryResult.wasEarlyRejected || retryResult.metadata.document_type === 'rejected') {
+                rememberReviewedDocument(
+                  nextPdf,
+                  'rejected',
+                  'retried',
+                  retryResult.skipReason ?? 'retry rejected before extraction',
+                  {
+                    reviewedPages: retryResult.reviewedPageNumbers,
+                    totalPages: retryResult.totalPages,
+                    pageSubsetStrategy: retryResult.pageSubsetStrategy,
+                    skipReason: retryResult.skipReason,
+                    costUsd: retryResult.costUsd,
+                    elapsedSec: retryResult.elapsedSec,
+                  },
+                );
+                retryLog(`Retry stopped before extraction: ${nextPdf.filename}`, 'error');
+              } else {
+                allMetrics.push(...retryResult.metrics);
+                allSignals.push(...mapSignals(retryResult.signals));
+                const dedupedMetrics = deduplicateMetrics(allMetrics);
+                allMetrics.length = 0;
+                allMetrics.push(...dedupedMetrics);
+                rememberReviewedDocument(
+                  nextPdf,
+                  'extracted',
+                  'retried',
+                  'auto-retry after partial coverage',
+                  {
+                    reviewedPages: retryResult.reviewedPageNumbers,
+                    totalPages: retryResult.totalPages,
+                    pageSubsetStrategy: retryResult.pageSubsetStrategy,
+                    costUsd: retryResult.costUsd,
+                    elapsedSec: retryResult.elapsedSec,
+                  },
+                );
 
               const finalCoverage = computeCoverageScore(allMetrics, retryFocusMetrics, liveTrackerAssetClasses);
               retryLog(
-                `After retry: found ${finalCoverage.foundTypes.length} of ${retryFocusMetrics.length} requested metrics`,
+                `After retry: found ${finalCoverage.foundTypes.length} of ${retryFocusMetrics.length} requested metrics${finalCoverage.missingTypes.length > 0 ? ` — still missing ${finalCoverage.missingTypes.join(', ')}` : ''}`,
                 'done',
               );
+              retryLog(`Retry PDF used: ${nextPdf.filename}`, 'done');
+              }
             }
           } catch (error) {
             if (!cancelled) {
               const msg = error instanceof Error ? error.message : 'Retry extraction failed';
+              rememberReviewedDocument(nextPdf, 'failed', 'retried', msg, { skipReason: msg });
               retryLog(`Retry error: ${msg}`, 'error');
             }
           }
         }
       }
 
-      const extractionDurationSec = Math.round((Date.now() - extractionStartTime) / 1000);
+      if (allMetrics.length === 0) {
+        const reviewedDocuments = Array.from(reviewedDocumentsByUrl.values());
+        const allRejectedEarly = reviewedDocuments.length > 0
+          && reviewedDocuments.every((document) => document.status === 'rejected');
+        const rejectSummary = allRejectedEarly
+          ? reviewedDocuments
+            .map((document) => `${document.filename}: ${document.skipReason ?? 'preview rejected before extraction'}`)
+            .join(' | ')
+          : 'No metrics were extracted from the reviewed PDFs.';
+        setLiveTracker((current) =>
+          current
+            ? {
+                ...current,
+                status: 'error',
+                errorMessage: rejectSummary,
+                message: allRejectedEarly
+                  ? 'All reviewed PDFs were stopped before Claude extraction.'
+                  : 'No metrics extracted from the reviewed PDFs.',
+                progress: {
+                  current: 0,
+                  total: 0,
+                  currentFile: '',
+                },
+              }
+            : current,
+        );
+        return;
+      }
+
+      const selectedPdf = selectedPdfLinks[0] ?? null;
+      const reviewedDocuments = Array.from(reviewedDocumentsByUrl.values());
+      const finalReviewScope = formatReviewScope(reviewedDocuments.length);
+      const skippedDocuments = tracker.pdfLinks
+        .slice(0, PDF_PREVIEW_CANDIDATE_COUNT)
+        .map((link) => {
+          const preview = pdfPreviewStates[link.url];
+          const rejectSignals = preview?.status === 'ready'
+            ? preview.negativeSignals.filter((signal) => signal.startsWith('early-rejected:'))
+            : [];
+          if (!preview || preview.status !== 'ready' || rejectSignals.length === 0) return null;
+          if (tracker.selectedPdfUrls.includes(link.url)) return null;
+          return buildReviewedDocument(
+            link,
+            liveTrackerSelectedSource?.label ?? '',
+            'rejected',
+            'skipped',
+            preview.score,
+            rejectSignals,
+            rejectSignals.join('; '),
+            {
+              previewMatchedMetrics: preview.matchedMetricTypes,
+              previewPagesScanned: preview.pagesScanned,
+              reviewedPages: Array.from({ length: preview.pagesScanned }, (_, index) => index + 1),
+              pagesReviewed: preview.pagesScanned,
+              pageSubsetStrategy: 'preview-only',
+              skipReason: rejectSignals.join('; '),
+            },
+          );
+        })
+        .filter((record): record is ReviewedDocument => record !== null)
+        .slice(0, 3);
+      const sourceCandidateRecords = (liveTracker?.sourceCandidates ?? [])
+        .slice(0, 3)
+        .map((candidate) => ({
+          label: candidate.label,
+          url: candidate.url,
+          documentType: candidate.documentType,
+          score: candidate.score,
+          matchedKeywords: candidate.matchedKeywords,
+        }));
+      const reviewedPages = Array.from(new Set(
+        reviewedDocuments.flatMap((document) => document.reviewedPages ?? []),
+      )).sort((a, b) => a - b);
+      const totalPages = reviewedDocuments.reduce(
+        (max, document) => Math.max(max, document.totalPages ?? 0),
+        0,
+      );
+      const extractionDurationSec = (Date.now() - extractionStartTime) / 1000;
+      const assessment = assessLiveResult({
+        query: liveTrackerQuery,
+        metrics: allMetrics,
+        selectedSource: liveTrackerSelectedSource,
+        documentCount: reviewedDocuments.length,
+      });
+      appendExtractionLog(
+        assessment
+          ? `Final completeness: ${assessment.completeness}${assessment.missingFocusMetrics.length > 0 ? ` — missing ${assessment.missingFocusMetrics.join(', ')}` : ''}`
+          : 'Final completeness: unknown',
+        assessment?.isWeakMatch ? 'error' : assessment?.completeness === 'partial' ? 'info' : 'done',
+      );
+      serverLog('LIVE_EXTRACTION_COMPLETE', {
+        query: liveTrackerQuery,
+        selectedSource: liveTrackerSelectedSource?.label ?? '',
+        reviewedDocuments: reviewedDocuments.map((document) => ({
+          filename: document.filename,
+          status: document.status,
+          reviewedPages: document.reviewedPages ?? [],
+          strategy: document.pageSubsetStrategy ?? 'unknown',
+          skipReason: document.skipReason ?? '',
+        })),
+        completeness: assessment?.completeness ?? 'unknown',
+        missingMetrics: assessment?.missingFocusMetrics ?? [],
+        costUsd: totalCostUsd,
+        elapsedSec: extractionDurationSec,
+      });
       setLiveTracker((current) =>
         current
           ? {
@@ -915,7 +1152,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
               status: 'complete',
               foundMetrics: allMetrics,
               foundSignals: allSignals,
-              message: `Found ${allMetrics.length} metric${allMetrics.length === 1 ? '' : 's'} in ${extractionDurationSec}s.`,
+              message: `Found ${allMetrics.length} metric${allMetrics.length === 1 ? '' : 's'} across ${reviewedDocuments.length} reviewed PDF${reviewedDocuments.length === 1 ? '' : 's'} in ${extractionDurationSec}s.`,
               errorMessage: '',
             }
           : current,
@@ -931,16 +1168,11 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         sourceSummary: liveTrackerSelectedSource
           ? `${liveTrackerSelectedSource.pensionFund} - ${liveTrackerSelectedSource.label}`
           : 'Live search tracker',
-        documentCount: totalDocumentsUsed,
+        documentCount: reviewedDocuments.length,
+        reviewedDocuments,
+        totalCostUsd,
+        totalElapsedSec: extractionDurationSec,
         createdAt: new Date().toISOString(),
-      });
-
-      // Save structured run artifact for evaluation
-      const selectedPdf = tracker.pdfLinks.find((link) => tracker.selectedPdfUrls.includes(link.url));
-      const assessment = assessLiveResult({
-        query: liveTrackerQuery,
-        metrics: allMetrics,
-        selectedSource: liveTrackerSelectedSource,
       });
       saveRunArtifact({
         id: `run-${Date.now()}`,
@@ -951,15 +1183,24 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
           label: liveTrackerSelectedSource?.label ?? '',
           document_type: liveTrackerSelectedSource?.documentType ?? '',
           url: liveTrackerSelectedSource?.url ?? '',
+          score: liveTrackerSelectedSource?.score ?? 0,
+          matched_keywords: liveTrackerSelectedSource?.matchedKeywords ?? [],
         },
         selected_pdf: {
           filename: selectedPdf?.filename ?? '',
-          source_label: '',
-          preview_score: null,
+          source_label: liveTrackerSelectedSource?.label ?? '',
+          preview_score: selectedPdf ? (pdfPreviewStates[selectedPdf.url]?.status === 'ready' ? pdfPreviewStates[selectedPdf.url].score : null) : null,
+          preview_negative_signals: selectedPdf ? (pdfPreviewStates[selectedPdf.url]?.status === 'ready' ? pdfPreviewStates[selectedPdf.url].negativeSignals : []) : [],
         },
-        retry_pdf: null,
-        reviewed_pages: [],
-        total_pages: 0,
+        retry_pdf: retryPdfUrl
+          ? reviewedDocuments.find((document) => document.url === retryPdfUrl) ?? null
+          : null,
+        selected_pdfs: reviewedDocuments,
+        skipped_pdfs: skippedDocuments,
+        reviewed_scope: finalReviewScope,
+        reviewed_pages: reviewedPages,
+        total_pages: totalPages,
+        source_candidates: sourceCandidateRecords,
         metrics: allMetrics.map((m) => ({
           metric: m.metric,
           asset_class: m.asset_class,
@@ -974,10 +1215,15 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
             : 1)
           : 0,
         completeness_label: assessment?.completeness ?? 'unknown',
-        proxy_hits: [],
-        cost_usd: 0,
-        elapsed_sec: 0,
-        documents_used: totalDocumentsUsed,
+        proxy_hits: assessment?.proxyFocusMetrics.map((metric) => ({
+          metric: metric.metric,
+          value: metric.value,
+          asset_class: metric.asset_class,
+          evidence: metric.evidence,
+        })) ?? [],
+        cost_usd: totalCostUsd,
+        elapsed_sec: extractionDurationSec,
+        documents_used: reviewedDocuments.length,
       });
     }
 
@@ -996,6 +1242,8 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
     liveTrackerQuery,
     liveTrackerSelectedSource,
     liveTrackerAssetClasses,
+    liveTracker?.sourceCandidates,
+    pdfPreviewStates,
     setActiveResults,
     setLiveTracker,
   ]);
@@ -1101,7 +1349,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
     const previewState = pdfPreviewStates[url];
     return !previewState || previewState.status === 'pending' || previewState.status === 'idle';
   });
-  const resultAssessment = useMemo(
+      const resultAssessment = useMemo(
     () =>
       liveTracker
         ? assessLiveResult({
@@ -1162,6 +1410,14 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         };
       });
 
+      const probeLog = (message: string, status: 'info' | 'done' | 'error' = 'info') => {
+        setLiveTracker((current) =>
+          current
+            ? { ...current, extractionLogs: [...current.extractionLogs, { message, status }] }
+            : current,
+        );
+      };
+
       for (const candidate of sourceProbeCandidatesToFetch) {
         if (cancelled) return;
 
@@ -1173,12 +1429,13 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
             .map((pdfLink) => scorePdfLink(pdfLink, searchIntents, liveTrackerQuery, candidate.documentType))
             .sort((left, right) => right.score - left.score || left.link.filename.localeCompare(right.link.filename));
 
-          let bestPdf = rankedCandidatePdfs[0];
-          let bestCombinedScore = bestPdf?.score ?? 0;
+          let bestPdf: RankedPdfLink | undefined;
+          let bestCombinedScore = Number.NEGATIVE_INFINITY;
           let bestMatchedKeywords: string[] = [];
           let bestMatchedMetricTypes: string[] = [];
           let bestNegativeSignals: string[] = [];
           let bestExcerpt = '';
+          const rejectedPreviewReasons: string[] = [];
 
           for (const pdfCandidate of rankedCandidatePdfs.slice(0, SOURCE_PREFLIGHT_PDF_COUNT)) {
             if (cancelled) return;
@@ -1193,6 +1450,8 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
               // Early reject: skip corporate/off-target docs
               const rejectCheck = earlyRejectCheck(previewText.text, liveTrackerQuery);
               if (rejectCheck.shouldReject) {
+                probeLog(`Skipped ${pdfCandidate.link.filename}: ${rejectCheck.reason}`, 'info');
+                rejectedPreviewReasons.push(`${pdfCandidate.link.filename}: ${rejectCheck.reason}`);
                 continue;
               }
 
@@ -1212,16 +1471,23 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
             }
           }
 
+          if (!bestPdf) {
+            bestPdf = rankedCandidatePdfs[SOURCE_PREFLIGHT_PDF_COUNT] ?? rankedCandidatePdfs[0];
+            bestCombinedScore = bestPdf?.score ?? 0;
+          }
+
           const bestPdfScore = bestCombinedScore;
           const bestPdfFilename = bestPdf?.link.filename ?? 'this source';
           const summary = pdfLinks.length === 0
             ? 'No PDFs found on this source page.'
             : bestMatchedMetricTypes.length > 0
               ? `Best file: ${bestPdfFilename}. Preview matched ${bestMatchedMetricTypes.join(', ')}${bestNegativeSignals.length > 0 ? `, but watch for ${bestNegativeSignals.join(', ')}` : ''}.`
-              : bestMatchedKeywords.length > 0
-                ? `Best file: ${bestPdfFilename}. Preview matched ${bestMatchedKeywords.join(', ')}${bestNegativeSignals.length > 0 ? `, but it still looks ${bestNegativeSignals.join(', ')}` : ''}.`
-                : bestPdf
-                  ? `Best file by preflight: ${bestPdfFilename}.${bestExcerpt ? ` ${bestExcerpt}` : ''}`
+            : bestMatchedKeywords.length > 0
+              ? `Best file: ${bestPdfFilename}. Preview matched ${bestMatchedKeywords.join(', ')}${bestNegativeSignals.length > 0 ? `, but it still looks ${bestNegativeSignals.join(', ')}` : ''}.`
+            : rejectedPreviewReasons.length > 0 && !bestPdf
+              ? `Top preview files were rejected before extraction: ${rejectedPreviewReasons.slice(0, 2).join(' | ')}`
+            : bestPdf
+                  ? `Best file by preflight: ${bestPdfFilename}.${bestExcerpt ? ` ${bestExcerpt}` : ''}${rejectedPreviewReasons.length > 0 ? ` Rejected ${rejectedPreviewReasons.length} off-target file${rejectedPreviewReasons.length === 1 ? '' : 's'} during preview.` : ''}`
                   : 'No clear PDF recommendation yet.';
 
           setSourceProbeStore((current) => ({
@@ -1582,7 +1848,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
           ? {
               ...current,
               status: 'extracting',
-              message: 'Extracting metrics from selected PDFs...',
+              message: 'Extracting metrics from reviewed PDFs...',
               extractionLogs: [],
               progress: { current: 0, total: current.selectedPdfUrls.length, currentFile: '' },
               errorMessage: '',
@@ -1618,6 +1884,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
   const selectedSourceIsRecommended = !!selectedSourceEntry && !!recommendedSourceEntry
     && selectedSourceEntry.candidate.url === recommendedSourceEntry.candidate.url;
   const selectedCount = liveTracker.selectedPdfUrls.length;
+  const reviewedDocumentPhrase = formatReviewScope(selectedCount);
 
   const togglePdf = (url: string) => {
     cancelAutoExtract();
@@ -1690,7 +1957,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         ? {
             ...current,
             status: 'extracting',
-            message: 'Extracting metrics from selected PDFs...',
+            message: 'Extracting metrics from reviewed PDFs...',
             extractionLogs: [],
             progress: { current: 0, total: current.selectedPdfUrls.length, currentFile: '' },
             errorMessage: '',
@@ -2238,8 +2505,8 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                   </div>
                   <p className="text-sm text-text-primary">
                     {requestedMetricTypes.length > 0
-                      ? `${liveTracker.foundMetrics.length} total rows extracted from ${liveTracker.selectedPdfUrls.length} PDF${liveTracker.selectedPdfUrls.length === 1 ? '' : 's'}`
-                      : `Found ${liveTracker.foundMetrics.length} metric${liveTracker.foundMetrics.length === 1 ? '' : 's'} from ${liveTracker.selectedPdfUrls.length} PDF${liveTracker.selectedPdfUrls.length === 1 ? '' : 's'}`}
+                      ? `${liveTracker.foundMetrics.length} total rows extracted from ${reviewedDocumentPhrase}`
+                      : `Found ${liveTracker.foundMetrics.length} metric${liveTracker.foundMetrics.length === 1 ? '' : 's'} from ${reviewedDocumentPhrase}`}
                   </p>
                   {(resultAssessment?.isWeakMatch || isPartialMatch) && (
                     <>
@@ -2275,9 +2542,9 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                           : 'General'}
                       </span>
                     </div>
-                  )}
+                  )} 
                   <p className="text-[11px] text-text-muted mt-0.5">
-                    {liveTracker.selectedPdfUrls.length} PDF{liveTracker.selectedPdfUrls.length === 1 ? '' : 's'} reviewed
+                    {reviewedDocumentPhrase}
                     {liveTracker.foundMetrics.length > 0 && ` \u00B7 ${liveTracker.foundMetrics.length} rows extracted`}
                   </p>
                 </div>

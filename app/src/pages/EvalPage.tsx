@@ -1,7 +1,8 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { representativeCases, runCase, buildRunSummary, formatReport } from '../eval';
 import type { CaseScore, EvalRunSummary, GoldCase } from '../eval';
+import { describeNegativeControlOutcome, formatGradeLabel, getSummaryStats } from '../eval/scorer';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -17,18 +18,260 @@ const FAMILY_LABELS: Record<string, string> = {
 
 function gradeBadge(grade: string) {
   const styles: Record<string, string> = {
-    pass: 'bg-emerald-500/20 text-emerald-400',
-    partial: 'bg-amber-500/20 text-amber-400',
-    weak: 'bg-orange-500/20 text-orange-400',
-    'rejected-correctly': 'bg-emerald-500/20 text-emerald-400',
-    'rejected-incorrectly': 'bg-red-500/20 text-red-400',
-    fail: 'bg-red-500/20 text-red-400',
+    pass: 'bg-emerald-500/20 text-emerald-300',
+    partial: 'bg-amber-500/20 text-amber-300',
+    weak: 'bg-orange-500/20 text-orange-300',
+    'rejected-correctly': 'bg-emerald-500/20 text-emerald-300',
+    'rejected-incorrectly': 'bg-red-500/20 text-red-300',
+    fail: 'bg-red-500/20 text-red-300',
   };
-  const labels: Record<string, string> = {
-    pass: 'PASS', partial: 'PARTIAL', weak: 'WEAK',
-    'rejected-correctly': 'REJECTED OK', 'rejected-incorrectly': 'REJECTED BAD', fail: 'FAIL',
+  return <span className={`px-2 py-0.5 rounded text-xs font-semibold ${styles[grade] ?? 'bg-zinc-500/20 text-zinc-400'}`}>{formatGradeLabel(grade as CaseScore['grade'])}</span>;
+}
+
+function formatDelta(current: number | null, baseline: number | null, decimals = 0, prefix = '', suffix = ''): string {
+  if (current === null || baseline === null) return 'No prior run to compare';
+  const delta = current - baseline;
+  if (Math.abs(delta) < 0.000001) return 'No change vs last run';
+  const sign = delta > 0 ? '+' : '-';
+  return `vs last run: ${sign}${prefix}${Math.abs(delta).toFixed(decimals)}${suffix}`;
+}
+
+function formatCountDelta(current: number | null, baseline: number | null): string | null {
+  if (current === null || baseline === null) return null;
+  const delta = current - baseline;
+  if (delta === 0) return null;
+  return `${delta > 0 ? '+' : ''}${delta}`;
+}
+
+function getPositiveSummaryCounts(summary: EvalRunSummary) {
+  const positiveScores = summary.scores.filter((score) => !score.caseId.startsWith('N'));
+  if (positiveScores.length === 0) {
+    return {
+      pass: summary.passed,
+      partial: summary.partial,
+      weak: summary.weak,
+      fail: summary.failed,
+    };
+  }
+
+  return {
+    pass: positiveScores.filter((score) => score.grade === 'pass').length,
+    partial: positiveScores.filter((score) => score.grade === 'partial').length,
+    weak: positiveScores.filter((score) => score.grade === 'weak').length,
+    fail: positiveScores.filter((score) => score.grade === 'fail' || score.grade === 'rejected-incorrectly').length,
   };
-  return <span className={`px-2 py-0.5 rounded text-xs font-semibold ${styles[grade] ?? 'bg-zinc-500/20 text-zinc-400'}`}>{labels[grade] ?? grade.toUpperCase()}</span>;
+}
+
+function getNegativeSummaryCounts(summary: EvalRunSummary) {
+  const negativeScores = summary.scores.filter((score) => score.caseId.startsWith('N'));
+  if (negativeScores.length === 0) {
+    return {
+      rejectedCorrectly: summary.rejectedCorrectly,
+      rejectedIncorrectly: summary.rejectedIncorrectly,
+    };
+  }
+
+  return {
+    rejectedCorrectly: negativeScores.filter((score) => score.grade === 'rejected-correctly').length,
+    rejectedIncorrectly: negativeScores.filter((score) => score.grade === 'rejected-incorrectly').length,
+  };
+}
+
+type StoredEvalScore = Omit<Partial<CaseScore>, 'metricMatches'> & {
+  found?: number;
+  total?: number;
+  forbiddenFound?: string[];
+  metadata?: {
+    document_type?: string;
+  };
+  metricMatches?: Array<{
+    expected?: {
+      metricType?: string;
+      value?: string;
+      valueIsPattern?: boolean;
+      assetClass?: string;
+      fund?: string;
+      gp?: string;
+    };
+    found?: boolean;
+    matchedValue?: string;
+    matchedType?: string;
+    matchedMetricType?: string;
+    matchedAsset?: string;
+    matchedAssetClass?: string;
+    matchedFund?: string;
+    matchedGp?: string;
+    reason?: string;
+  }>;
+  metrics?: unknown[];
+};
+
+type StoredEvalSummary = Partial<EvalRunSummary> & {
+  totalCost?: number;
+  results?: StoredEvalScore[];
+  scores?: StoredEvalScore[];
+};
+
+const representativeCaseById = new Map(representativeCases.map((goldCase) => [goldCase.id, goldCase]));
+
+function normalizeStoredMetricMatches(rawMatches: StoredEvalScore['metricMatches']): CaseScore['metricMatches'] {
+  if (!Array.isArray(rawMatches)) {
+    return [];
+  }
+
+  return rawMatches.map((match) => ({
+    expected: {
+      metricType: match.expected?.metricType ?? '',
+      value: match.expected?.value,
+      valueIsPattern: match.expected?.valueIsPattern,
+      assetClass: match.expected?.assetClass,
+      fund: match.expected?.fund,
+      gp: match.expected?.gp,
+    },
+    found: Boolean(match.found),
+    matchedValue: match.matchedValue,
+    matchedMetricType: match.matchedMetricType ?? match.matchedType,
+    matchedAssetClass: match.matchedAssetClass ?? match.matchedAsset,
+    matchedFund: match.matchedFund,
+    matchedGp: match.matchedGp,
+    reason: match.reason,
+  }));
+}
+
+function normalizeStoredGrade(
+  rawGrade: unknown,
+  caseId: string,
+  metricCount: number,
+  documentType?: string,
+): CaseScore['grade'] {
+  const normalizedGrade = typeof rawGrade === 'string' ? rawGrade.toLowerCase() : '';
+
+  if (caseId.startsWith('N')) {
+    return documentType === 'rejected' || metricCount === 0
+      ? 'rejected-correctly'
+      : 'rejected-incorrectly';
+  }
+
+  if (documentType === 'rejected') {
+    return 'rejected-incorrectly';
+  }
+
+  switch (normalizedGrade) {
+    case 'pass':
+      return 'pass';
+    case 'partial':
+      return 'partial';
+    case 'weak':
+      return 'weak';
+    case 'rejected-correctly':
+      return 'rejected-correctly';
+    case 'rejected-incorrectly':
+      return 'rejected-incorrectly';
+    default:
+      return metricCount > 0 ? 'weak' : 'fail';
+  }
+}
+
+function normalizeStoredScore(rawScore: StoredEvalScore): CaseScore | null {
+  const caseId = typeof rawScore.caseId === 'string' ? rawScore.caseId : '';
+  if (!caseId) {
+    return null;
+  }
+
+  const referenceCase = representativeCaseById.get(caseId);
+  const metricMatches = normalizeStoredMetricMatches(rawScore.metricMatches);
+  const metricsFound = typeof rawScore.metricsFound === 'number'
+    ? rawScore.metricsFound
+    : typeof rawScore.found === 'number'
+      ? rawScore.found
+      : metricMatches.filter((match) => match.found).length;
+  const metricsExpected = typeof rawScore.metricsExpected === 'number'
+    ? rawScore.metricsExpected
+    : typeof rawScore.total === 'number'
+      ? rawScore.total
+      : metricMatches.length;
+  const forbiddenMetricsFound = Array.isArray(rawScore.forbiddenMetricsFound)
+    ? rawScore.forbiddenMetricsFound
+    : Array.isArray(rawScore.forbiddenFound)
+      ? rawScore.forbiddenFound
+      : [];
+  const detectedDocumentFamily = typeof rawScore.detectedDocumentFamily === 'string'
+    ? rawScore.detectedDocumentFamily
+    : rawScore.metadata?.document_type;
+  const extractedMetricCount = Array.isArray(rawScore.metrics) ? rawScore.metrics.length : metricsFound;
+  const grade = normalizeStoredGrade(rawScore.grade, caseId, extractedMetricCount, detectedDocumentFamily);
+  const passed = grade === 'pass'
+    || grade === 'rejected-correctly'
+    || (grade === 'partial' && Boolean(referenceCase?.partialAcceptable));
+
+  return {
+    caseId,
+    caseName: typeof rawScore.caseName === 'string' ? rawScore.caseName : referenceCase?.name ?? caseId,
+    query: typeof rawScore.query === 'string' ? rawScore.query : referenceCase?.query ?? '',
+    documentFamilyCorrect: typeof rawScore.documentFamilyCorrect === 'boolean'
+      ? rawScore.documentFamilyCorrect
+      : !caseId.startsWith('N'),
+    detectedDocumentFamily,
+    metricMatches,
+    metricsFound,
+    metricsExpected,
+    extractionScore: metricsExpected > 0 ? metricsFound / metricsExpected : 1,
+    forbiddenMetricsFound,
+    negativePassed: forbiddenMetricsFound.length === 0,
+    passed,
+    grade,
+    costUsd: typeof rawScore.costUsd === 'number' ? rawScore.costUsd : undefined,
+    inputTokens: typeof rawScore.inputTokens === 'number' ? rawScore.inputTokens : undefined,
+    outputTokens: typeof rawScore.outputTokens === 'number' ? rawScore.outputTokens : undefined,
+    elapsedSec: typeof rawScore.elapsedSec === 'number' ? rawScore.elapsedSec : undefined,
+    pagesReviewed: typeof rawScore.pagesReviewed === 'number' ? rawScore.pagesReviewed : undefined,
+  };
+}
+
+function normalizeStoredSummary(rawSummary: unknown): EvalRunSummary | null {
+  if (!rawSummary || typeof rawSummary !== 'object') {
+    return null;
+  }
+
+  const storedSummary = rawSummary as StoredEvalSummary;
+  const rawScores = Array.isArray(storedSummary.scores)
+    ? storedSummary.scores
+    : Array.isArray(storedSummary.results)
+      ? storedSummary.results
+      : [];
+  const scores = rawScores
+    .map(normalizeStoredScore)
+    .filter((score): score is CaseScore => score !== null);
+
+  if (scores.length === 0) {
+    return null;
+  }
+
+  const summary = buildRunSummary(
+    scores,
+    typeof storedSummary.runId === 'string'
+      ? storedSummary.runId
+      : typeof storedSummary.timestamp === 'string'
+        ? `stored-${storedSummary.timestamp}`
+        : 'stored-eval',
+  );
+  const totalCostUsd = typeof storedSummary.totalCostUsd === 'number'
+    ? storedSummary.totalCostUsd
+    : typeof storedSummary.totalCost === 'number'
+      ? storedSummary.totalCost
+      : summary.totalCostUsd;
+  const totalElapsedSec = typeof storedSummary.totalElapsedSec === 'number'
+    ? storedSummary.totalElapsedSec
+    : summary.totalElapsedSec;
+
+  return {
+    ...summary,
+    timestamp: typeof storedSummary.timestamp === 'string' ? storedSummary.timestamp : summary.timestamp,
+    totalCostUsd,
+    averageCostUsd: totalCostUsd / Math.max(summary.casesRun, 1),
+    totalElapsedSec,
+    averageElapsedSec: totalElapsedSec / Math.max(summary.casesRun, 1),
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -43,14 +286,22 @@ export function EvalPage() {
   const [scores, setScores] = useState<CaseScore[]>([]);
   const [lastRunSummary, setLastRunSummary] = useState<EvalRunSummary | null>(null);
   const [previousRun, setPreviousRun] = useState<EvalRunSummary | null>(null);
+  const [comparisonRun, setComparisonRun] = useState<EvalRunSummary | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   // Load previous run on mount
   useEffect(() => {
     fetch('/api/eval-runs')
       .then((r) => r.json())
-      .then((runs: EvalRunSummary[]) => {
-        if (runs.length > 0) setPreviousRun(runs[0]);
+      .then((runs: unknown[]) => {
+        const normalizedRuns = Array.isArray(runs)
+          ? runs
+            .map(normalizeStoredSummary)
+            .filter((run): run is EvalRunSummary => run !== null)
+          : [];
+        if (normalizedRuns.length > 0) {
+          setPreviousRun(normalizedRuns[0]);
+        }
       })
       .catch(() => {});
   }, []);
@@ -79,6 +330,7 @@ export function EvalPage() {
   const handleRunBenchmark = useCallback(async () => {
     if (!apiKey) { log('No API key set', 'error'); return; }
     setRunning(true);
+    setComparisonRun(lastRunSummary ?? previousRun);
     setScores([]);
     setLastRunSummary(null);
 
@@ -114,28 +366,43 @@ export function EvalPage() {
 
     setRunningCaseId(null);
     setRunning(false);
-  }, [apiKey, log]);
+  }, [apiKey, lastRunSummary, log, previousRun]);
 
   const scoreForCase = (id: string) => scores.find((s) => s.caseId === id);
-
-  // Compute current stats for summary
-  const currentPassRate = scores.length > 0
-    ? scores.filter((s) => s.passed).length / scores.length
-    : null;
-  const currentAvgCost = scores.length > 0
-    ? scores.reduce((sum, s) => sum + (s.costUsd ?? 0), 0) / scores.length
-    : null;
-  const currentAvgLatency = scores.length > 0
-    ? scores.reduce((sum, s) => sum + (s.elapsedSec ?? 0), 0) / scores.length
-    : null;
-  const currentRejectRate = scores.length > 0
-    ? scores.filter((s) => s.grade === 'rejected-correctly' || (s.grade === 'pass' && s.metricsExpected === 0 && s.metricsFound === 0)).length /
-      Math.max(scores.filter((s) => representativeCases.find((gc) => gc.id === s.caseId)?.documentFamily === 'negative-control').length, 1)
-    : null;
-  const baselineRun = lastRunSummary ?? previousRun;
-  const prevPassRate = baselineRun ? baselineRun.passed / Math.max(baselineRun.casesRun, 1) : null;
-  const prevAvgCost = baselineRun ? baselineRun.totalCostUsd / Math.max(baselineRun.casesRun, 1) : null;
-  const prevAvgLatency = baselineRun ? baselineRun.totalElapsedSec / Math.max(baselineRun.casesRun, 1) : null;
+  const currentSummary = useMemo(
+    () => (scores.length > 0 ? buildRunSummary(scores, 'current-preview') : null),
+    [scores],
+  );
+  const currentStats = currentSummary ? getSummaryStats(currentSummary) : null;
+  const currentPositiveCounts = currentSummary ? getPositiveSummaryCounts(currentSummary) : null;
+  const currentNegativeCounts = currentSummary ? getNegativeSummaryCounts(currentSummary) : null;
+  const baselineRun = comparisonRun ?? previousRun;
+  const baselineStats = baselineRun ? getSummaryStats(baselineRun) : null;
+  const baselinePositiveCounts = baselineRun ? getPositiveSummaryCounts(baselineRun) : null;
+  const baselineNegativeCounts = baselineRun ? getNegativeSummaryCounts(baselineRun) : null;
+  const summaryToDisplay = currentSummary ?? lastRunSummary ?? previousRun;
+  const summaryStats = summaryToDisplay ? getSummaryStats(summaryToDisplay) : null;
+  const summaryPositiveCounts = summaryToDisplay ? getPositiveSummaryCounts(summaryToDisplay) : null;
+  const summaryNegativeCounts = summaryToDisplay ? getNegativeSummaryCounts(summaryToDisplay) : null;
+  const positiveQualityDelta = currentSummary && baselineRun
+    ? [
+        formatCountDelta(currentPositiveCounts?.pass ?? null, baselinePositiveCounts?.pass ?? null) && `Pass ${formatCountDelta(currentPositiveCounts?.pass ?? null, baselinePositiveCounts?.pass ?? null)}`,
+        formatCountDelta(currentPositiveCounts?.partial ?? null, baselinePositiveCounts?.partial ?? null) && `Partial ${formatCountDelta(currentPositiveCounts?.partial ?? null, baselinePositiveCounts?.partial ?? null)}`,
+        formatCountDelta(currentPositiveCounts?.weak ?? null, baselinePositiveCounts?.weak ?? null) && `Weak ${formatCountDelta(currentPositiveCounts?.weak ?? null, baselinePositiveCounts?.weak ?? null)}`,
+        formatCountDelta(currentPositiveCounts?.fail ?? null, baselinePositiveCounts?.fail ?? null) && `Fail ${formatCountDelta(currentPositiveCounts?.fail ?? null, baselinePositiveCounts?.fail ?? null)}`,
+      ].filter(Boolean).join(' • ')
+    : '';
+  const negativeDelta = currentSummary && baselineRun
+    ? formatCountDelta(currentNegativeCounts?.rejectedCorrectly ?? null, baselineNegativeCounts?.rejectedCorrectly ?? null)
+      ? `Rejected correctly ${formatCountDelta(currentNegativeCounts?.rejectedCorrectly ?? null, baselineNegativeCounts?.rejectedCorrectly ?? null)}`
+      : ''
+    : '';
+  const costDelta = currentStats && baselineStats
+    ? formatDelta(currentStats.averageCostUsd, baselineStats.averageCostUsd, 4, '$')
+    : '';
+  const latencyDelta = currentStats && baselineStats
+    ? formatDelta(currentStats.averageElapsedSec, baselineStats.averageElapsedSec, 0, '', 's')
+    : '';
 
   return (
     <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -144,12 +411,12 @@ export function EvalPage() {
         <div>
           <h1 className="text-2xl font-bold text-white">Benchmark</h1>
           <p className="text-sm text-zinc-400 mt-1">
-            5 representative cases — extraction correctness, reject behavior, cost, latency.
+            5 representative cases — positive quality, reject correctness, cost, and latency.
           </p>
         </div>
         <div className="flex gap-3">
           <button
-            onClick={() => { setLogs([]); setScores([]); setLastRunSummary(null); }}
+            onClick={() => { setLogs([]); setScores([]); setLastRunSummary(null); setComparisonRun(null); }}
             disabled={running}
             className="px-4 py-2 text-sm rounded-lg border border-zinc-700 text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
           >
@@ -173,48 +440,50 @@ export function EvalPage() {
 
       {/* Compact benchmark summary — always visible */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Pass Rate</div>
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Positive quality</div>
             <div className="text-2xl font-bold text-white">
-              {currentPassRate !== null ? `${Math.round(currentPassRate * 100)}%` : prevPassRate !== null ? `${Math.round(prevPassRate * 100)}%` : '—'}
+              {summaryToDisplay && summaryStats && summaryPositiveCounts ? `${summaryPositiveCounts.pass}/${summaryStats.positiveCases} pass` : '—'}
             </div>
             <div className="text-[10px] text-zinc-500 mt-0.5">
-              {scores.length > 0
-                ? `${scores.filter((s) => s.passed).length}/${scores.length} cases`
-                : baselineRun ? `${baselineRun.passed}/${baselineRun.casesRun} (last run)` : 'No runs yet'}
+              {summaryToDisplay && summaryPositiveCounts
+                ? `${summaryPositiveCounts.partial} partial · ${summaryPositiveCounts.weak} weak · ${summaryPositiveCounts.fail} fail`
+                : 'No runs yet'}
             </div>
+            <div className="text-[10px] text-zinc-500 mt-1">{positiveQualityDelta || (baselineRun ? 'No change vs last run' : 'No prior run to compare')}</div>
           </div>
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Avg Cost / Case</div>
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Negative controls</div>
             <div className="text-2xl font-bold text-white">
-              {currentAvgCost !== null ? `$${currentAvgCost.toFixed(3)}` : prevAvgCost !== null ? `$${prevAvgCost.toFixed(3)}` : '—'}
+              {summaryToDisplay && summaryStats && summaryNegativeCounts ? `${summaryNegativeCounts.rejectedCorrectly}/${summaryStats.negativeCases} rejected` : '—'}
             </div>
             <div className="text-[10px] text-zinc-500 mt-0.5">
-              {scores.length > 0
-                ? `$${scores.reduce((s, c) => s + (c.costUsd ?? 0), 0).toFixed(3)} total`
-                : baselineRun ? `$${baselineRun.totalCostUsd.toFixed(3)} total (last run)` : ''}
+              {summaryToDisplay && summaryNegativeCounts
+                ? `${summaryNegativeCounts.rejectedIncorrectly} rejected incorrectly`
+                : 'No runs yet'}
             </div>
+            <div className="text-[10px] text-zinc-500 mt-1">{negativeDelta || (baselineRun ? 'No change vs last run' : 'No prior run to compare')}</div>
           </div>
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Avg Latency</div>
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Avg cost / case</div>
             <div className="text-2xl font-bold text-white">
-              {currentAvgLatency !== null ? `${currentAvgLatency.toFixed(0)}s` : prevAvgLatency !== null ? `${prevAvgLatency.toFixed(0)}s` : '—'}
+              {summaryStats ? `$${summaryStats.averageCostUsd.toFixed(3)}` : '—'}
             </div>
             <div className="text-[10px] text-zinc-500 mt-0.5">
-              {scores.length > 0
-                ? `${scores.reduce((s, c) => s + (c.elapsedSec ?? 0), 0).toFixed(0)}s total`
-                : baselineRun ? `${baselineRun.totalElapsedSec.toFixed(0)}s total (last run)` : ''}
+              {summaryToDisplay ? `$${summaryToDisplay.totalCostUsd.toFixed(4)} total` : 'No runs yet'}
             </div>
+            <div className="text-[10px] text-zinc-500 mt-1">{costDelta || 'No prior run to compare'}</div>
           </div>
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Neg. Control Reject</div>
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Avg latency / case</div>
             <div className="text-2xl font-bold text-white">
-              {currentRejectRate !== null ? `${Math.round(currentRejectRate * 100)}%` : '—'}
+              {summaryStats ? `${summaryStats.averageElapsedSec.toFixed(0)}s` : '—'}
             </div>
             <div className="text-[10px] text-zinc-500 mt-0.5">
-              {scores.length > 0 ? 'of negative controls handled' : baselineRun ? `Last: ${baselineRun.passed}/${baselineRun.casesRun}` : 'No data'}
+              {summaryToDisplay ? `${summaryToDisplay.totalElapsedSec.toFixed(1)}s total` : 'No runs yet'}
             </div>
+            <div className="text-[10px] text-zinc-500 mt-1">{latencyDelta || 'No prior run to compare'}</div>
           </div>
         </div>
       </div>
@@ -287,12 +556,17 @@ export function EvalPage() {
               {s && (
                 <div className="mt-2 space-y-1">
                   {isNegative ? (
-                    <div className="text-[10px] text-zinc-400">
-                      <span className="text-zinc-500">Expected:</span> reject &nbsp;
-                      <span className="text-zinc-500">Observed:</span>{' '}
-                      {s.forbiddenMetricsFound.length > 0
-                        ? <span className="text-red-400">extracted {s.forbiddenMetricsFound.length} off-target metric(s)</span>
-                        : <span className="text-emerald-400">correctly handled</span>}
+                    <div className="text-[10px] text-zinc-400 space-y-0.5">
+                      {(() => {
+                        const outcome = describeNegativeControlOutcome(s);
+                        return (
+                          <>
+                            <div><span className="text-zinc-500">Expected:</span> {outcome.expected}</div>
+                            <div><span className="text-zinc-500">Observed:</span> {outcome.observed}</div>
+                            <div><span className="text-zinc-500">Result:</span> {outcome.result}</div>
+                          </>
+                        );
+                      })()}
                     </div>
                   ) : (
                     <div className="text-[10px] text-zinc-500">{s.metricsFound}/{s.metricsExpected} metrics matched</div>

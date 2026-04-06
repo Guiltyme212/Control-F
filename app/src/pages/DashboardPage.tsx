@@ -1,228 +1,280 @@
-import { useMemo } from 'react';
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import {
-  TrendingDown, TrendingUp, Activity, FileText, Zap,
-  DollarSign, AlertTriangle, Sparkles, Building2, Clock, Database,
+  Activity, FileText, Zap, Sparkles, Clock, Database,
+  CheckCircle2, Eye, AlertCircle, ShieldX, Plus,
+  Play, Pause, Pencil, RotateCw, SlidersHorizontal,
 } from 'lucide-react';
-import type { Page, Tracker } from '../data/types';
+import type { Page } from '../data/types';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend
+  PieChart, Pie, Cell,
 } from 'recharts';
 import { useAppContext } from '../context/AppContext';
-import { useCountUp } from '../hooks/useCountUp';
-import { metrics, trackers, getCommitmentTotal } from '../data/metrics';
 import { LiveSearchTrackerCard } from '../components/LiveSearchTrackerCard';
-
-const COLORS = ['#6366f1', '#3b82f6', '#8b5cf6', '#f97316', '#06b6d4'];
-
-function parseValue(val: string): number {
-  const raw = val.replace(/,/g, '');
-  const euroMatch = raw.match(/€([\d.]+)/);
-  if (euroMatch) return parseFloat(euroMatch[1]) * 1.08;
-  const usdMatch = raw.match(/\$([\d.]+)/);
-  if (usdMatch) return parseFloat(usdMatch[1]);
-  return 0;
-}
+import { ShineBorder } from '../components/ui/shine-border';
 
 /* ================================================================
-   Shared sub-components
+   Constants & Types
    ================================================================ */
 
 const ease = [0.22, 1, 0.36, 1] as const;
 
-function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number }>; label?: string }) {
+type TrackerState = 'needs-review' | 'healthy' | 'partial' | 'paused';
+
+interface DashboardTracker {
+  name: string;
+  state: TrackerState;
+  freshness: string;
+  change: string;
+  watches: string;
+  controls: string;
+  footer: string;
+  actionChips: string[];
+}
+
+const DONUT_COLORS = ['#818cf8', '#6366f1', '#8b5cf6', '#a78bfa', '#4f46e5'];
+
+/* ================================================================
+   Seeded data
+   ================================================================ */
+
+const dashboardTrackers: DashboardTracker[] = [
+  {
+    name: 'PSERS private markets IRR, TVPI, DPI, and NAV',
+    state: 'needs-review',
+    freshness: 'Updated today',
+    change: 'Found 3 of 4 requested metrics in the latest reviewed report; DPI still not found in reviewed documents.',
+    watches: 'PSERS • IRR, TVPI, DPI, NAV • Private Equity, Infrastructure, Credit, Real Estate',
+    controls: 'Weekly • Performance reports only • Medium alert sensitivity',
+    footer: '2 PDFs reviewed • 101 rows extracted • Performance Report',
+    actionChips: ['Edit query', 'Edit scope', 'Run now', 'Pause'],
+  },
+  {
+    name: 'Infrastructure commitments — top US pension funds',
+    state: 'healthy',
+    freshness: '3 new signals',
+    change: 'Macquarie, Ardian, and related infrastructure activity surfaced across board and memo-style documents.',
+    watches: 'NY State CRF, SDCERS, NJ State • Commitments • Infrastructure / Real Assets',
+    controls: 'Weekly • Board agendas + memos • High sensitivity',
+    footer: '4 sources • 12 signals • Last run today',
+    actionChips: ['Edit query', 'Edit scope', 'Run now', 'Pause'],
+  },
+  {
+    name: 'Manager terminations Q4 2025',
+    state: 'healthy',
+    freshness: '1 new event',
+    change: 'NY State CRF termination activity remains the most material governance-driven capital movement in the current sample.',
+    watches: 'Manager terminations • Mandate exits • Public Equities / Alternatives rotation',
+    controls: 'Daily • Transaction reports + board docs • High sensitivity',
+    footer: '6 sources • 3 events • Last run 2 days ago',
+    actionChips: ['Edit query', 'Edit scope', 'Run now', 'Pause'],
+  },
+  {
+    name: 'Fee terms and fund economics',
+    state: 'paused',
+    freshness: 'Paused 12 days ago',
+    change: 'Ardian ASF IX remains the clearest memo example for target return, fund size, and fee/carry extraction.',
+    watches: 'Management fee • Carry • Target return • Fund size',
+    controls: 'Monthly • Investment memos only • Medium sensitivity',
+    footer: '2 sources • 5 extracted terms',
+    actionChips: ['Edit query', 'Edit scope', 'Resume', 'Run now'],
+  },
+];
+
+const watchlistFocusData = [
+  { name: 'Performance metrics', value: 34 },
+  { name: 'Commitments', value: 27 },
+  { name: 'Manager events', value: 16 },
+  { name: 'Fund terms', value: 13 },
+  { name: 'Negative-control', value: 10 },
+];
+
+const signalsOverTimeData = [
+  { month: 'Nov 2025', value: 8 },
+  { month: 'Dec 2025', value: 2 },
+  { month: 'Jan 2026', value: 11 },
+];
+
+const evidenceRows = [
+  { date: '2026-01-29', tracker: 'PSERS private markets metrics', finding: 'DPI still not found in reviewed documents; NAV, IRR, and TVPI surfaced', source: 'Performance report', confidence: 'High' },
+  { date: '2026-01-27', tracker: 'Fee terms and fund economics', finding: 'Ardian ASF IX target return surfaced at 12–14% net IRR; target size $7.5B', source: 'NJ State memo', confidence: 'High' },
+  { date: '2026-01-22', tracker: 'Private markets performance watch', finding: 'One-year IRR extracted at 8.40%; market value and unfunded commitments visible', source: 'Santa Barbara PRR', confidence: 'High' },
+  { date: '2025-11-04', tracker: 'Manager terminations Q4 2025', finding: 'T. Rowe Price termination surfaced at approximately $2.0B in public equities', source: 'NY State CRF transaction report', confidence: 'High' },
+  { date: '2025-11-04', tracker: 'Infra commitments — top US pension funds', finding: 'Kreos Capital VIII commitment surfaced at $200M', source: 'NY State CRF transaction report', confidence: 'High' },
+];
+
+type FilterTab = 'all' | 'needs-review' | 'healthy' | 'paused';
+
+/* ================================================================
+   Sub-components
+   ================================================================ */
+
+function ChartTooltip({ active, payload, label, suffix }: { active?: boolean; payload?: Array<{ value: number }>; label?: string; suffix?: string }) {
   if (!active || !payload?.length) return null;
   return (
     <div className="bg-bg-card border border-border rounded-lg px-3 py-2 shadow-lg">
       <p className="text-xs text-text-muted">{label}</p>
-      <p className="text-sm font-semibold text-text-primary">${payload[0].value}M</p>
+      <p className="text-sm font-semibold text-text-primary">{payload[0].value}{suffix || ''}</p>
     </div>
   );
 }
 
-function BarGradientDefs() {
-  return (
-    <defs>
-      <linearGradient id="barGradientV" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stopColor="#818cf8" stopOpacity={1} />
-        <stop offset="100%" stopColor="#6366f1" stopOpacity={0.8} />
-      </linearGradient>
-      <linearGradient id="barGradientH" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0%" stopColor="#6366f1" stopOpacity={0.8} />
-        <stop offset="100%" stopColor="#818cf8" stopOpacity={1} />
-      </linearGradient>
-    </defs>
-  );
-}
-
-function ChartCard({ children, delay, title }: { children: React.ReactNode; delay: number; title?: string }) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay, duration: 0.6, ease }}
-      className="chart-card"
-    >
-      {title && (
-        <h3 className="text-sm font-semibold text-text-secondary mb-4 flex items-center gap-2">
-          <span className="w-1 h-4 rounded-full" style={{ background: 'linear-gradient(180deg, #818cf8 0%, #6366f1 100%)' }} />
-          {title}
-        </h3>
-      )}
-      {children}
-    </motion.div>
-  );
-}
-
-function ChartAnnotation({ icon: Icon, color, message }: { icon: React.ElementType; color: string; message: React.ReactNode }) {
-  return (
-    <div className={`flex items-center gap-2 mt-3 px-2.5 py-2 rounded-lg ${color} border`}>
-      <Icon className="w-3.5 h-3.5 shrink-0" />
-      <p className="text-xs">{message}</p>
-    </div>
-  );
-}
-
-function ShimmerBar({ width, delay }: { width: string; delay: number }) {
-  return (
-    <div className="w-full bg-bg-primary rounded-full h-2 overflow-hidden relative">
-      <motion.div
-        className="h-full rounded-full bg-gradient-to-r from-accent to-accent-light relative overflow-hidden"
-        initial={{ width: 0 }}
-        animate={{ width }}
-        transition={{ delay, duration: 0.8 }}
-      >
-        <motion.div
-          className="absolute inset-0"
-          style={{
-            background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.2) 50%, transparent 100%)',
-            backgroundSize: '200% 100%',
-          }}
-          animate={{ backgroundPosition: ['-200% 0', '200% 0'] }}
-          transition={{ delay: delay + 0.8, duration: 1.5, repeat: Infinity, repeatDelay: 2, ease: 'easeInOut' }}
-        />
-      </motion.div>
-    </div>
-  );
-}
-
-/* ================================================================
-   Hero Stat Card
-   ================================================================ */
-
-function HeroStat({ label, value, subtitle, icon: Icon, delay }: {
-  label: string;
-  value: string | number;
-  subtitle: string;
-  icon: React.ElementType;
-  delay: number;
+function PulseCard({ label, value, subtext, icon: Icon, delay, accent }: {
+  label: string; value: string | number; subtext: string; icon: React.ElementType; delay: number; accent?: string;
 }) {
   return (
     <motion.div
-      initial={{ opacity: 0, y: 24, scale: 0.96 }}
+      initial={{ opacity: 0, y: 20, scale: 0.97 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ delay, duration: 0.7, ease }}
-      whileHover={{ y: -2, transition: { duration: 0.25, ease: 'easeOut' } }}
+      transition={{ delay, duration: 0.6, ease }}
+      whileHover={{ y: -2, transition: { duration: 0.2, ease: 'easeOut' } }}
       className="stat-card"
     >
       <div className="stat-card-inner">
-        <div className="flex items-center justify-between mb-3">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-muted">{label}</span>
-          <div className="w-7 h-7 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center">
-            <Icon className="w-3.5 h-3.5 text-accent-light" />
+        <div className="flex items-center justify-between mb-2.5">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">{label}</span>
+          <div className={`w-6 h-6 rounded-md flex items-center justify-center ${accent || 'bg-accent/10 border border-accent/20'}`}>
+            <Icon className="w-3 h-3 text-accent-light" />
           </div>
         </div>
-        <p className="stat-value text-3xl font-bold tracking-tight leading-none mb-1.5">{value}</p>
-        <p className="text-[11px] text-text-muted leading-relaxed">{subtitle}</p>
+        <p className="stat-value text-2xl font-bold tracking-tight leading-none mb-1">{value}</p>
+        <p className="text-[10px] text-text-muted leading-relaxed">{subtext}</p>
       </div>
     </motion.div>
   );
 }
 
-/* ================================================================
-   Tracker Card
-   ================================================================ */
-
-function TrackerCard({ tracker, index, isHighlighted }: { tracker: Tracker; index: number; isHighlighted?: boolean }) {
+function StateIndicator({ state }: { state: TrackerState }) {
+  const config: Record<TrackerState, { label: string; dot: string; bg: string; text: string }> = {
+    'needs-review': { label: 'Needs review', dot: 'bg-amber-400', bg: 'bg-amber-400/10 border-amber-400/25', text: 'text-amber-300' },
+    'healthy': { label: 'Healthy', dot: 'bg-green', bg: 'bg-green/10 border-green/25', text: 'text-green-light' },
+    'partial': { label: 'Partial', dot: 'bg-blue', bg: 'bg-blue/10 border-blue/25', text: 'text-blue' },
+    'paused': { label: 'Paused', dot: 'bg-text-muted/40', bg: 'bg-text-muted/8 border-text-muted/20', text: 'text-text-muted' },
+  };
+  const c = config[state];
   return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold ${c.bg} ${c.text}`}>
+      {state === 'needs-review' ? (
+        <motion.div className={`w-1.5 h-1.5 rounded-full ${c.dot}`} animate={{ opacity: [1, 0.4, 1] }} transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }} />
+      ) : (
+        <div className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
+      )}
+      {c.label}
+    </span>
+  );
+}
+
+function TrackerHeroCard({ tracker, index }: { tracker: DashboardTracker; index: number }) {
+  const isNeedsReview = tracker.state === 'needs-review';
+  const isPaused = tracker.state === 'paused';
+  const card = (
     <motion.div
-      initial={{ opacity: 0, y: 16 }}
+      initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.15 + index * 0.08, duration: 0.5, ease }}
-      whileHover={{ y: -2, transition: { duration: 0.25, ease: 'easeOut' } }}
-      className={`group relative cursor-pointer overflow-hidden rounded-2xl px-4 py-3.5 shadow-[0_20px_60px_rgba(5,10,20,0.22)] transition-all ${
-        isHighlighted
-          ? 'border border-accent/22 bg-gradient-to-br from-accent/8 to-bg-card/90'
-          : tracker.status === 'paused'
-            ? 'border border-border/50 bg-bg-card/60'
-            : 'border border-border/70 bg-bg-card/90 hover:border-accent/20'
+      transition={{ delay: 0.2 + index * 0.08, duration: 0.55, ease }}
+      className={`group relative overflow-hidden transition-all ${
+        isNeedsReview
+          ? 'rounded-2xl border border-amber-400/20 bg-gradient-to-br from-amber-400/[0.04] to-bg-card/95 shadow-[0_20px_60px_rgba(5,10,20,0.28)]'
+          : isPaused
+            ? 'rounded-2xl border border-border/40 bg-bg-card/50 shadow-[0_12px_40px_rgba(5,10,20,0.18)]'
+            : 'rounded-2xl border border-border/60 bg-bg-card/90 shadow-[0_20px_60px_rgba(5,10,20,0.24)] hover:border-accent/20'
       }`}
     >
       {/* Hover glow */}
-      <div
-        className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
-        style={{ background: 'radial-gradient(ellipse at 30% 0%, rgba(99,102,241,0.05) 0%, transparent 70%)' }}
-      />
+      {!isPaused && (
+        <div
+          className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+          style={{ background: isNeedsReview
+            ? 'radial-gradient(ellipse at 20% 0%, rgba(251,191,36,0.06) 0%, transparent 60%)'
+            : 'radial-gradient(ellipse at 20% 0%, rgba(99,102,241,0.05) 0%, transparent 60%)'
+          }}
+        />
+      )}
 
-      <div className="relative">
-        {/* Header */}
-        <div className="mb-2 flex items-start justify-between">
-          <div className="flex items-center gap-2.5 min-w-0">
-            {tracker.status === 'active' ? (
-              <motion.div
-                className="w-2 h-2 rounded-full bg-green shrink-0 mt-1"
-                animate={{ opacity: [1, 0.4, 1] }}
-                transition={{ duration: 2.5, repeat: Infinity, ease: 'easeInOut' }}
-              />
-            ) : (
-              <div className="w-2 h-2 rounded-full bg-text-muted/30 shrink-0 mt-1" />
-            )}
-            <h4 className="truncate text-[15px] font-semibold text-text-primary">{tracker.name}</h4>
+      <div className="relative px-5 py-4">
+        {/* Row 1: Name + State + Freshness */}
+        <div className="flex items-start justify-between mb-3">
+          <div className="min-w-0 flex-1 mr-4">
+            <h3 className={`text-[15px] font-semibold leading-snug ${isPaused ? 'text-text-muted' : 'text-text-primary'}`}>
+              {tracker.name}
+            </h3>
           </div>
-          <div className="flex items-center gap-2 shrink-0 ml-2">
-            {(tracker.newAlerts ?? 0) > 0 && (
-              <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-bold text-accent-light">
-                {tracker.newAlerts} new
-              </span>
-            )}
-            {tracker.status === 'paused' && (
-              <span className="rounded-full bg-text-muted/10 px-2 py-0.5 text-[10px] font-medium text-text-muted">
-                Paused
-              </span>
-            )}
+          <div className="flex items-center gap-2 shrink-0">
+            <StateIndicator state={tracker.state} />
+            <span className="text-[10px] text-text-muted/60 whitespace-nowrap">{tracker.freshness}</span>
           </div>
         </div>
 
-        {/* Latest finding */}
-        {tracker.latestFinding && (
-          <p className={`mb-2.5 line-clamp-1 text-xs leading-relaxed ${
-            tracker.status === 'paused' ? 'text-text-muted/60' : 'text-text-secondary'
-          }`}>
-            {tracker.latestFinding}
+        {/* Row 2: What changed */}
+        <div className="mb-3">
+          <p className={`text-[13px] leading-relaxed ${isPaused ? 'text-text-muted/50' : 'text-text-secondary'}`}>
+            {tracker.change}
           </p>
-        )}
+        </div>
 
-        {/* Metadata row */}
-        <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-muted">
-          <span className="flex items-center gap-1 rounded-full border border-border/50 bg-bg-hover/60 px-2 py-1">
-            <Database className="w-3 h-3" />
-            {tracker.sources}
-          </span>
-          <span className="hidden" aria-hidden="true">·</span>
-          <span className="flex items-center gap-1 rounded-full border border-border/50 bg-bg-hover/60 px-2 py-1">
-            <Activity className="w-3 h-3" />
-            {tracker.metrics}
-          </span>
-          <span className="hidden" aria-hidden="true">·</span>
-          <span className="flex items-center gap-1 rounded-full border border-border/50 bg-bg-hover/60 px-2 py-1">
-            <Clock className="w-3 h-3" />
-            {tracker.frequency}
-          </span>
-          <span className="ml-auto text-text-muted/50">{tracker.last_match}</span>
+        {/* Row 3: What it watches */}
+        <div className="mb-3">
+          <p className="text-[10px] uppercase tracking-[0.06em] text-text-muted/50 font-semibold mb-1">Watches</p>
+          <p className={`text-[11px] leading-relaxed ${isPaused ? 'text-text-muted/40' : 'text-text-muted'}`}>
+            {tracker.watches}
+          </p>
+        </div>
+
+        {/* Row 4: Controls info */}
+        <div className="mb-3">
+          <p className="text-[10px] uppercase tracking-[0.06em] text-text-muted/50 font-semibold mb-1">Controls</p>
+          <p className={`text-[11px] ${isPaused ? 'text-text-muted/40' : 'text-text-muted'}`}>
+            {tracker.controls}
+          </p>
+        </div>
+
+        {/* Row 5: Action chips */}
+        <div className="flex items-center gap-1.5 mb-3">
+          {tracker.actionChips.map(chip => {
+            const iconMap: Record<string, React.ElementType> = {
+              'Edit query': Pencil, 'Edit scope': SlidersHorizontal,
+              'Run now': Play, 'Pause': Pause, 'Resume': RotateCw,
+            };
+            const ChipIcon = iconMap[chip] || Pencil;
+            return (
+              <button
+                key={chip}
+                className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[10px] font-medium transition-colors cursor-pointer ${
+                  isPaused
+                    ? 'border border-border/40 bg-bg-hover/30 text-text-muted/50'
+                    : chip === 'Run now'
+                      ? 'border border-accent/25 bg-accent/10 text-accent-light hover:bg-accent/15'
+                      : 'border border-border/50 bg-bg-hover/50 text-text-muted hover:text-text-secondary hover:border-border'
+                }`}
+              >
+                <ChipIcon className="w-2.5 h-2.5" />
+                {chip}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Row 6: Mini footer */}
+        <div className={`flex items-center gap-1.5 text-[10px] pt-2.5 border-t ${isPaused ? 'border-border/20 text-text-muted/30' : 'border-border/40 text-text-muted/50'}`}>
+          <Database className="w-3 h-3" />
+          <span>{tracker.footer}</span>
         </div>
       </div>
     </motion.div>
+  );
+
+  return card;
+}
+
+function DonutLabel({ viewBox, total }: { viewBox?: { cx: number; cy: number }; total: string }) {
+  if (!viewBox) return null;
+  const { cx, cy } = viewBox;
+  return (
+    <text x={cx} y={cy} textAnchor="middle" dominantBaseline="central">
+      <tspan x={cx} y={cy - 6} className="fill-text-primary text-lg font-bold">{total}</tspan>
+      <tspan x={cx} y={cy + 12} className="fill-text-muted text-[10px]">focus mix</tspan>
+    </text>
   );
 }
 
@@ -236,99 +288,22 @@ interface DashboardPageProps {
 
 export function DashboardPage({ onNavigate }: DashboardPageProps) {
   const { liveTracker } = useAppContext();
+  const [filter, setFilter] = useState<FilterTab>('all');
 
-  const allTrackers = useMemo(() => trackers, []);
+  const filtered = dashboardTrackers.filter(t => {
+    if (filter === 'all') return true;
+    if (filter === 'needs-review') return t.state === 'needs-review';
+    if (filter === 'healthy') return t.state === 'healthy';
+    if (filter === 'paused') return t.state === 'paused';
+    return true;
+  });
 
-  const totalCapital = useMemo(() => getCommitmentTotal(), []);
-  const capitalTarget = useMemo(() => Math.round(totalCapital / 10_000_000), [totalCapital]);
-  const capitalCount = useCountUp(capitalTarget, 1400, true, { formatter: (n) => `$${(n / 100).toFixed(2)}B` });
-  const metricsCount = useCountUp(metrics.length, 1200);
-
-  const commitmentsByAsset = useMemo(() => {
-    const map: Record<string, number> = {};
-    metrics
-      .filter(m => m.metric === 'Commitment')
-      .forEach(m => {
-        const val = parseValue(m.value);
-        map[m.asset_class] = (map[m.asset_class] || 0) + val;
-      });
-    const COLORS_MAP: Record<string, string> = {
-      'Infrastructure': '#6366f1', 'Credit': '#3b82f6', 'Private Equity': '#8b5cf6',
-      'Natural Resources': '#f97316', 'Real Assets': '#06b6d4', 'Real Estate': '#ec4899',
-      'Public Equities': '#10b981',
-    };
-    return Object.entries(map)
-      .map(([name, value]) => ({ name, value: Math.round(value / 1_000_000), fill: COLORS_MAP[name] || '#6b7280' }))
-      .sort((a, b) => b.value - a.value);
-  }, []);
-
-  const commitmentsByMonth = useMemo(() => {
-    const map: Record<string, number> = {};
-    metrics
-      .filter(m => m.metric === 'Commitment')
-      .forEach(m => {
-        const d = new Date(m.date);
-        const key = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
-        map[key] = (map[key] || 0) + Math.round(parseValue(m.value) / 1_000_000);
-      });
-    return Object.entries(map)
-      .sort(([a], [b]) => new Date(a).getTime() - new Date(b).getTime())
-      .map(([month, value]) => ({ month, value }));
-  }, []);
-
-  const topGPs = useMemo(() => {
-    const map: Record<string, number> = {};
-    metrics
-      .filter(m => m.metric === 'Commitment')
-      .forEach(m => {
-        const val = Math.round(parseValue(m.value) / 1_000_000);
-        map[m.gp] = (map[m.gp] || 0) + val;
-      });
-    return Object.entries(map)
-      .map(([name, value]) => ({ name: name.length > 16 ? name.slice(0, 14) + '...' : name, value }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 8);
-  }, []);
-
-  const lpActivity = useMemo(() => {
-    const map: Record<string, { transactions: number; capital: number }> = {};
-    metrics.forEach(m => {
-      if (!map[m.lp]) map[m.lp] = { transactions: 0, capital: 0 };
-      map[m.lp].transactions += 1;
-      if (m.metric === 'Commitment') {
-        map[m.lp].capital += Math.round(parseValue(m.value) / 1_000_000);
-      }
-    });
-    return Object.entries(map)
-      .map(([name, data]) => ({ name, ...data }))
-      .sort((a, b) => b.capital - a.capital);
-  }, []);
-
-  const timelineEvents = useMemo(() => {
-    const sorted = [...metrics].sort((a, b) => b.date.localeCompare(a.date));
-    const now = new Date();
-    const sevenDaysAgo = new Date(now);
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-    return sorted.slice(0, 10).map(m => {
-      const d = new Date(m.date);
-      const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      const val = Math.round(parseValue(m.value) / 1_000_000);
-      const isTermination = m.metric === 'Termination';
-      const color = isTermination ? 'bg-red' : m.metric === 'Performance' ? 'bg-blue' : m.metric === 'Commitment' ? 'bg-green' : 'bg-accent';
-      const amount = isTermination ? `-$${val}M` : val > 0 ? `$${val}M` : m.value;
-      const lpShort = m.lp.length > 12 ? m.lp.replace('State ', '').replace('Santa Barbara', 'SB').replace(' ERS', '') : m.lp;
-      return {
-        date: dateStr,
-        type: m.metric,
-        color,
-        headline: `${m.lp}: ${m.metric} — ${m.fund}`,
-        amount,
-        lp: lpShort,
-        isNew: d > sevenDaysAgo,
-      };
-    });
-  }, []);
+  const filterTabs: { key: FilterTab; label: string; count?: number }[] = [
+    { key: 'all', label: 'All', count: dashboardTrackers.length },
+    { key: 'needs-review', label: 'Needs review', count: dashboardTrackers.filter(t => t.state === 'needs-review').length },
+    { key: 'healthy', label: 'Healthy', count: dashboardTrackers.filter(t => t.state === 'healthy').length },
+    { key: 'paused', label: 'Paused', count: dashboardTrackers.filter(t => t.state === 'paused').length },
+  ];
 
   return (
     <div className="flex-1 p-6 overflow-auto relative">
@@ -343,75 +318,120 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         }}
       />
 
-      <div className="relative z-10">
-        {/* ---- 1. Hero Stats ---- */}
-        <div className="grid grid-cols-4 gap-4 mb-6">
-          <HeroStat
-            label="Capital Deployed"
-            value={capitalCount}
-            subtitle="Across 4 pension fund portfolios"
-            icon={DollarSign}
+      <div className="relative z-10 max-w-[1200px] mx-auto">
+
+        {/* ---- 1. Watchlist Pulse Cards ---- */}
+        <div className="grid grid-cols-4 gap-3 mb-6">
+          <PulseCard
+            label="Trackers needing review"
+            value={2}
+            subtext="New signals or partial answers in the last 7 days"
+            icon={Eye}
+            delay={0.05}
+            accent="bg-amber-400/10 border border-amber-400/20"
+          />
+          <PulseCard
+            label="New documents detected"
+            value={11}
+            subtext="Across PSERS, NY State CRF, Santa Barbara, and NJ State"
+            icon={FileText}
             delay={0.1}
           />
-          <HeroStat
-            label="Infrastructure"
-            value="$1.01B"
-            subtitle="58% of all capital -- strongest signal"
-            icon={TrendingUp}
+          <PulseCard
+            label="High-confidence extractions"
+            value={23}
+            subtext="New metrics surfaced with strong evidence"
+            icon={CheckCircle2}
             delay={0.15}
+            accent="bg-green/10 border border-green/20"
           />
-          <HeroStat
-            label="Terminated Mandates"
-            value="$2.0B"
-            subtitle="NY CRF -- T. Rowe Price exit"
-            icon={AlertTriangle}
+          <PulseCard
+            label="Weak / rejected documents"
+            value={3}
+            subtext="Caught before full extraction or flagged low-confidence"
+            icon={ShieldX}
             delay={0.2}
-          />
-          <HeroStat
-            label="Data Points"
-            value={metricsCount}
-            subtitle="4 docs -- 14 funds -- 12 GPs"
-            icon={FileText}
-            delay={0.25}
+            accent="bg-red/10 border border-red/20"
           />
         </div>
 
-        {/* ---- 2. Active Trackers ---- */}
+        {/* ---- 2. Active Trackers — Hero Section ---- */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.28, duration: 0.5, ease }}
+          transition={{ delay: 0.18, duration: 0.5, ease }}
           className="mb-6"
         >
-          <div className="flex items-end justify-between mb-3">
-            <div>
-              <h2 className="text-sm font-semibold text-text-secondary flex items-center gap-2">
-                <span className="w-1 h-4 rounded-full" style={{ background: 'linear-gradient(180deg, #10b981 0%, #059669 100%)' }} />
-                Active Trackers
-              </h2>
+          <ShineBorder
+            borderWidth={2}
+            duration={5}
+            gradient="from-indigo-500 via-purple-500 to-emerald-400"
+          >
+            {/* Tracker section inner */}
+            <div className="p-5">
+            {/* Section header */}
+            <div className="flex items-start justify-between mb-1.5">
+              <div>
+                <h2 className="text-base font-bold text-text-primary flex items-center gap-2">
+                  <span className="w-1 h-5 rounded-full" style={{ background: 'linear-gradient(180deg, #10b981 0%, #059669 100%)' }} />
+                  Active Trackers
+                </h2>
+                <p className="text-[11px] text-text-muted mt-1 ml-3">
+                  Monitor new documents, metric changes, and off-target reports across your watchlist.
+                </p>
+              </div>
+              <button className="inline-flex items-center gap-1.5 rounded-lg border border-accent/25 bg-accent/10 px-3 py-1.5 text-[11px] font-semibold text-accent-light transition-colors hover:bg-accent/15 cursor-pointer shrink-0">
+                <Plus className="w-3 h-3" />
+                New Tracker
+              </button>
             </div>
-            <span className="text-[11px] text-text-muted">
-              {allTrackers.filter(t => t.status === 'active').length + (liveTracker ? 1 : 0)} active
-            </span>
+
+            {/* Filter tabs */}
+            <div className="flex items-center gap-1 mb-4 ml-3">
+              {filterTabs.map(tab => (
+                <button
+                  key={tab.key}
+                  onClick={() => setFilter(tab.key)}
+                  className={`rounded-lg px-2.5 py-1 text-[10px] font-medium transition-colors cursor-pointer ${
+                    filter === tab.key
+                      ? 'bg-accent/15 text-accent-light border border-accent/25'
+                      : 'text-text-muted hover:text-text-secondary border border-transparent'
+                  }`}
+                >
+                  {tab.label}
+                  {tab.count !== undefined && <span className="ml-1 opacity-50">{tab.count}</span>}
+                </button>
+              ))}
+            </div>
+
+            {/* Live tracker if running */}
+            {liveTracker && (
+              <div className="mb-3">
+                <ShineBorder
+                  borderWidth={1.5}
+                  duration={4}
+                  gradient="from-amber-400 via-orange-500 to-yellow-300"
+                >
+                  <LiveSearchTrackerCard onNavigate={onNavigate} />
+                </ShineBorder>
+              </div>
+            )}
+
+            {/* Tracker cards */}
+            <div className="flex flex-col gap-3">
+              {filtered.map((tracker, i) => (
+                <TrackerHeroCard key={tracker.name} tracker={tracker} index={i} />
+              ))}
+            </div>
           </div>
-          <div className="flex flex-col gap-3">
-            {liveTracker && <LiveSearchTrackerCard onNavigate={onNavigate} />}
-            {allTrackers.map((tracker, i) => (
-              <TrackerCard
-                key={tracker.id ?? tracker.name}
-                tracker={tracker}
-                index={i + (liveTracker ? 1 : 0)}
-                isHighlighted={false}
-              />
-            ))}
-          </div>
+          </ShineBorder>
         </motion.div>
 
-        {/* ---- 3. Key Insight Callout ---- */}
+        {/* ---- 3. Watchlist Takeaway ---- */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.35, duration: 0.6, ease }}
+          transition={{ delay: 0.5, duration: 0.6, ease }}
           className="insight-card mb-6"
           style={{ borderLeftColor: '#8b5cf6' }}
         >
@@ -419,51 +439,45 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
           <div className="relative">
             <div className="flex items-center gap-2 mb-2">
               <Sparkles className="w-3.5 h-3.5 text-purple" />
-              <span className="text-[11px] font-semibold text-purple uppercase tracking-[0.08em]">Key Finding</span>
+              <span className="text-[11px] font-semibold text-purple uppercase tracking-[0.08em]">Watchlist Takeaway</span>
             </div>
             <p className="text-sm text-text-primary leading-relaxed">
-              NY State CRF drove <span className="text-accent-light font-semibold">58%</span> of all capital activity this period.
-              The <span className="text-red font-semibold">$2B T. Rowe Price termination</span> signals a rotation from public equities into alternatives
-              &mdash; the fund deployed <span className="text-accent-light font-semibold">$1.08B</span> across 6 new alternative commitments in the same month.
+              Your watchlist is currently generating the cleanest intelligence from transaction reports, performance updates,
+              and memo-style recommendation documents. Noisy board minutes continue to generate low-value or rejectable results
+              for performance-specific searches.
             </p>
           </div>
         </motion.div>
 
-        {/* ---- 4. Dashboard header ---- */}
-        <div className="mb-5 flex items-end justify-between">
-          <div>
-            <h2 className="text-lg font-bold text-text-primary mb-0.5">Market Intelligence</h2>
-            <p className="text-xs text-text-secondary font-light">Aggregate data across 4 pension fund documents</p>
-          </div>
-          <motion.div
-            initial={{ opacity: 0, x: 10 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.15, duration: 0.4 }}
-            className="px-3 py-1.5 rounded-lg bg-bg-card border border-border text-xs text-text-muted font-medium"
-          >
-            Apr 2025 &mdash; Jan 2026
-          </motion.div>
-        </div>
-
-        {/* ---- 5. Chart Grid ---- */}
+        {/* ---- 4. Charts ---- */}
         <div className="grid grid-cols-2 gap-4 mb-6">
-          {/* Commitments by Asset Class */}
-          <ChartCard delay={0.4} title="Commitments by Asset Class">
-            <ResponsiveContainer width="100%" height={260}>
+          {/* Donut: Watchlist Focus */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.55, duration: 0.6, ease }}
+            className="chart-card"
+          >
+            <h3 className="text-sm font-semibold text-text-secondary mb-4 flex items-center gap-2">
+              <span className="w-1 h-4 rounded-full" style={{ background: 'linear-gradient(180deg, #818cf8 0%, #6366f1 100%)' }} />
+              Current watchlist focus
+            </h3>
+            <ResponsiveContainer width="100%" height={220}>
               <PieChart>
                 <Pie
-                  data={commitmentsByAsset}
+                  data={watchlistFocusData}
                   cx="50%"
                   cy="50%"
-                  innerRadius={60}
-                  outerRadius={95}
+                  innerRadius={58}
+                  outerRadius={88}
                   paddingAngle={3}
                   dataKey="value"
-                  animationBegin={400}
+                  animationBegin={500}
                   animationDuration={1000}
+                  label={({ name, value }) => `${name} ${value}%`}
                 >
-                  {commitmentsByAsset.map((entry, i) => (
-                    <Cell key={entry.name} fill={COLORS[i % COLORS.length]} />
+                  {watchlistFocusData.map((_entry, i) => (
+                    <Cell key={i} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
                   ))}
                 </Pie>
                 <Tooltip
@@ -473,140 +487,128 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
                     return (
                       <div className="bg-bg-card border border-border rounded-lg px-3 py-2 shadow-lg">
                         <p className="text-xs text-text-muted">{d.name}</p>
-                        <p className="text-sm font-semibold text-text-primary">${d.value}M</p>
+                        <p className="text-sm font-semibold text-text-primary">{d.value}%</p>
                       </div>
                     );
                   }}
                 />
-                <Legend formatter={(value) => <span className="text-xs text-text-secondary">{value}</span>} />
               </PieChart>
             </ResponsiveContainer>
-            <ChartAnnotation
-              icon={TrendingDown}
-              color="bg-red/10 border-red/20 text-red"
-              message={<><span className="font-semibold">Public Equities: -$2.0B</span> &mdash; T. Rowe Price termination (outflow)</>}
-            />
-          </ChartCard>
+            <p className="text-[11px] text-text-muted leading-relaxed mt-2 px-1">
+              Your current tracker mix is weighted toward performance monitoring and commitment activity.
+            </p>
+          </motion.div>
 
-          {/* Commitment Activity Over Time */}
-          <ChartCard delay={0.5} title="Commitment Activity Over Time">
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={commitmentsByMonth}>
-                <BarGradientDefs />
+          {/* Bar: Signals Over Time */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.6, duration: 0.6, ease }}
+            className="chart-card"
+          >
+            <h3 className="text-sm font-semibold text-text-secondary mb-4 flex items-center gap-2">
+              <span className="w-1 h-4 rounded-full" style={{ background: 'linear-gradient(180deg, #818cf8 0%, #6366f1 100%)' }} />
+              New signals over time
+            </h3>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={signalsOverTimeData}>
+                <defs>
+                  <linearGradient id="barGradientV" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#818cf8" stopOpacity={1} />
+                    <stop offset="100%" stopColor="#6366f1" stopOpacity={0.8} />
+                  </linearGradient>
+                </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2b38" vertical={false} />
                 <XAxis dataKey="month" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v}M`} />
-                <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(99,102,241,0.08)' }} />
+                <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                <Tooltip content={<ChartTooltip suffix=" signals" />} cursor={{ fill: 'rgba(99,102,241,0.08)' }} />
                 <Bar dataKey="value" fill="url(#barGradientV)" radius={[4, 4, 0, 0]} animationDuration={1000} />
               </BarChart>
             </ResponsiveContainer>
-            <ChartAnnotation
-              icon={Zap}
-              color="bg-accent-glow border-accent/20 text-accent-light"
-              message={<><span className="font-semibold">Nov 2025 spike:</span> NY State CRF deployed $1.08B in a single month</>}
-            />
-          </ChartCard>
-
-          {/* Top GPs by Capital */}
-          <ChartCard delay={0.6} title="Top GPs by Capital Committed">
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={topGPs} layout="vertical">
-                <BarGradientDefs />
-                <CartesianGrid strokeDasharray="3 3" stroke="#2a2b38" horizontal={false} />
-                <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v}M`} />
-                <YAxis type="category" dataKey="name" tick={{ fill: '#9ca3af', fontSize: 11 }} axisLine={false} tickLine={false} width={110} />
-                <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgba(99,102,241,0.08)' }} />
-                <Bar dataKey="value" fill="url(#barGradientH)" radius={[0, 4, 4, 0]} animationDuration={1000} />
-              </BarChart>
-            </ResponsiveContainer>
-            <ChartAnnotation
-              icon={Building2}
-              color="bg-accent-glow border-accent/20 text-accent-light"
-              message={<><span className="font-semibold">CVC DIF Mgmt</span> leads with EUR-denominated infra funds</>}
-            />
-          </ChartCard>
-
-          {/* LP Activity */}
-          <ChartCard delay={0.7} title="LP Activity Overview">
-            <div className="space-y-3">
-              {lpActivity.map((lp, i) => (
-                <motion.div
-                  key={lp.name}
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.8 + i * 0.1, duration: 0.5, ease }}
-                  className="bg-bg-tertiary rounded-lg p-3.5 border border-border/50"
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-text-primary">{lp.name}</span>
-                    <span className="text-xs text-text-muted">{lp.transactions} transactions</span>
-                  </div>
-                  <ShimmerBar width={`${Math.min((lp.capital / 1100) * 100, 100)}%`} delay={1.0 + i * 0.1} />
-                  <div className="mt-1.5 text-xs text-text-muted">
-                    ~<span className="text-accent-light/80">$</span>{lp.capital}M committed
-                  </div>
-                </motion.div>
-              ))}
+            <div className="flex items-center gap-2 mt-3 px-2.5 py-2 rounded-lg bg-accent-glow border border-accent/20 text-accent-light">
+              <Zap className="w-3.5 h-3.5 shrink-0" />
+              <p className="text-xs">
+                Signal activity increased as new recommendation packets and tracker-relevant reports were added to the watchlist.
+              </p>
             </div>
-            <ChartAnnotation
-              icon={TrendingUp}
-              color="bg-accent-glow border-accent/20 text-accent-light"
-              message={<><span className="font-semibold">NY State CRF</span> accounts for 58% of total capital deployed</>}
-            />
-          </ChartCard>
+          </motion.div>
         </div>
 
-        {/* ---- 6. Activity Timeline ---- */}
+        {/* ---- 5. Recent Tracker Evidence ---- */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.8, duration: 0.6, ease }}
-          className="chart-card"
+          transition={{ delay: 0.65, duration: 0.6, ease }}
+          className="chart-card mb-6"
         >
-          <h3 className="text-sm font-semibold text-text-secondary mb-5 flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-text-secondary mb-4 flex items-center gap-2">
             <span className="w-1 h-4 rounded-full" style={{ background: 'linear-gradient(180deg, #818cf8 0%, #6366f1 100%)' }} />
-            Recent Activity
+            Recent tracker evidence
           </h3>
 
-          <div className="relative">
-            {/* Vertical line */}
-            <div className="absolute left-[7px] top-2 bottom-2 w-px bg-border" />
-
-            <div className="space-y-4">
-              {timelineEvents.map((event, i) => (
-                <motion.div
-                  key={i}
-                  initial={{ opacity: 0, x: -12 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.9 + i * 0.06, duration: 0.4, ease }}
-                  className="flex items-start gap-3 relative"
-                >
-                  {/* Dot */}
-                  <div className={`w-[15px] h-[15px] rounded-full ${event.color} shrink-0 mt-0.5 border-2 border-bg-primary relative z-10`} />
-
-                  {/* Content */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span className="text-[11px] text-text-muted font-medium">{event.date}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-hover text-text-muted font-medium">{event.lp}</span>
-                      {event.isNew && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-accent/15 text-accent-light font-semibold">NEW</span>
-                      )}
-                    </div>
-                    <p className="text-sm text-text-primary leading-snug">{event.headline}</p>
-                  </div>
-
-                  {/* Amount */}
-                  <span className={`text-sm font-mono font-semibold tabular-nums shrink-0 ${
-                    event.amount.startsWith('-') ? 'text-red' : 'text-green-light'
-                  }`}>
-                    {event.amount}
-                  </span>
-                </motion.div>
-              ))}
-            </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-border/50">
+                  <th className="pb-2.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted/60 pr-3 whitespace-nowrap">Date</th>
+                  <th className="pb-2.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted/60 pr-3">Tracker</th>
+                  <th className="pb-2.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted/60 pr-3">Finding</th>
+                  <th className="pb-2.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted/60 pr-3">Source</th>
+                  <th className="pb-2.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted/60">Confidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {evidenceRows.map((row, i) => (
+                  <motion.tr
+                    key={i}
+                    initial={{ opacity: 0, x: -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.7 + i * 0.05, duration: 0.4, ease }}
+                    className="border-b border-border/30 last:border-0"
+                  >
+                    <td className="py-2.5 pr-3 text-[11px] text-text-muted font-mono whitespace-nowrap">{row.date}</td>
+                    <td className="py-2.5 pr-3 text-[11px] text-accent-light/80 font-medium whitespace-nowrap max-w-[180px] truncate">{row.tracker}</td>
+                    <td className="py-2.5 pr-3 text-xs text-text-secondary leading-relaxed">{row.finding}</td>
+                    <td className="py-2.5 pr-3 text-[11px] text-text-muted whitespace-nowrap">{row.source}</td>
+                    <td className="py-2.5">
+                      <span className="inline-flex items-center gap-1 text-[11px] text-green-light">
+                        <CheckCircle2 className="w-3 h-3" />
+                        {row.confidence}
+                      </span>
+                    </td>
+                  </motion.tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </motion.div>
+
+        {/* ---- 6. Pipeline Benchmark Footer ---- */}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.8, duration: 0.5, ease }}
+          className="rounded-xl border border-border/40 bg-bg-card/40 px-5 py-3.5 flex items-center gap-4"
+        >
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded-md bg-green/10 border border-green/20 flex items-center justify-center">
+              <AlertCircle className="w-3 h-3 text-green-light" />
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-text-primary">Pipeline benchmark</span>
+              <span className="text-xs text-text-muted ml-2">5 / 5 cases passing</span>
+            </div>
+          </div>
+          <div className="h-4 w-px bg-border/40" />
+          <div className="flex items-center gap-3 text-[10px] text-text-muted">
+            <span>Avg cost ~$0.08</span>
+            <span className="text-border/60">&middot;</span>
+            <span>Early reject active on corporate false positives</span>
+            <span className="text-border/60">&middot;</span>
+            <span>Latest negative-control: <span className="text-green-light font-medium">rejected correctly</span></span>
+          </div>
+        </motion.div>
+
       </div>
     </div>
   );

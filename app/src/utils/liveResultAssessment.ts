@@ -13,6 +13,7 @@ interface AssessLiveResultArgs {
   query: string;
   metrics: Metric[];
   selectedSource?: SourceSearchCandidate | null;
+  documentCount?: number;
 }
 
 export type CompletenessLabel = 'complete' | 'partial' | 'partial-subset' | 'weak';
@@ -27,6 +28,7 @@ export interface LiveResultAssessment {
   focusMetricTypes: string[];
   meaningfulMetrics: Metric[];
   matchedFocusMetrics: Metric[];
+  proxyFocusMetrics: Metric[];
   missingFocusMetrics: string[];
   performanceMetrics: Metric[];
   actionableCommitments: Metric[];
@@ -74,6 +76,7 @@ function buildAssessment(
   focusMetricTypes: string[],
   meaningfulMetrics: Metric[],
   matchedFocusMetrics: Metric[],
+  proxyFocusMetrics: Metric[],
   missingFocusMetrics: string[],
   performanceMetrics: Metric[],
   actionableCommitments: Metric[],
@@ -93,6 +96,7 @@ function buildAssessment(
     focusMetricTypes,
     meaningfulMetrics,
     matchedFocusMetrics,
+    proxyFocusMetrics,
     missingFocusMetrics,
     performanceMetrics,
     actionableCommitments,
@@ -100,7 +104,7 @@ function buildAssessment(
   };
 }
 
-export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveResultArgs): LiveResultAssessment | null {
+export function assessLiveResult({ query, metrics, selectedSource, documentCount = 1 }: AssessLiveResultArgs): LiveResultAssessment | null {
   if (!metrics.length) {
     return null;
   }
@@ -109,11 +113,13 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
   const normalizedQuery = query.toLowerCase();
   const focusMetricTypes = getFocusMetricTargets(query);
   const meaningfulMetrics = metrics.filter((metric) => !isNoActivityValue(metric.value));
-  const matchedFocusMetrics = focusMetricTypes.length
+  const focusMatchedMetrics = focusMetricTypes.length
     ? meaningfulMetrics.filter((metric) => metricMatchesRequestedFocus(metric, focusMetricTypes))
     : [];
+  const proxyFocusMetrics = focusMatchedMetrics.filter((metric) => isProxyMetricMatch(metric));
+  const matchedFocusMetrics = focusMatchedMetrics.filter((metric) => !isProxyMetricMatch(metric));
   const missingFocusMetrics = sortMetricNames(
-    focusMetricTypes.filter((metricType) => !meaningfulMetrics.some((metric) => metricMatchesRequestedFocus(metric, [metricType]))),
+    focusMetricTypes.filter((metricType) => !matchedFocusMetrics.some((metric) => metricMatchesRequestedFocus(metric, [metricType]))),
   );
   const performanceMetrics = meaningfulMetrics.filter((metric) => PERFORMANCE_METRIC_TYPES.has(metric.metric));
   const actionableCommitments = meaningfulMetrics.filter(
@@ -126,8 +132,11 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
   const broadAllocationMetrics = meaningfulMetrics.filter((metric) => isBroadAllocationMetric(metric.metric));
   const performanceMultipleMetrics = meaningfulMetrics.filter((metric) => isPerformanceMultiple(metric.metric));
   const matchedFocusMetricTypes = sortMetricNames(
-    focusMetricTypes.filter((metricType) => meaningfulMetrics.some((metric) => metricMatchesRequestedFocus(metric, [metricType]))),
+    focusMetricTypes.filter((metricType) => matchedFocusMetrics.some((metric) => metricMatchesRequestedFocus(metric, [metricType]))),
   );
+  const reviewedFileLabel = documentCount > 1 ? 'these reviewed documents' : 'this file';
+  const selectedDocumentLabel = documentCount > 1 ? 'the reviewed documents' : 'the selected PDF';
+  const reportLabel = documentCount > 1 ? 'these reviewed documents' : 'this report';
 
   if (meaningfulMetrics.length === 0) {
     return buildAssessment(
@@ -135,17 +144,18 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
       focusMetricTypes,
       meaningfulMetrics,
       matchedFocusMetrics,
+      proxyFocusMetrics,
       missingFocusMetrics,
       performanceMetrics,
       actionableCommitments,
       infrastructureCommitments,
       true,
-      'Weak match: this file only surfaced "No activity" references.',
+      `Weak match: ${reviewedFileLabel} only surfaced "No activity" references.`,
       intents.includes('performance')
-        ? 'The selected PDF did not contain extractable performance rows, so it is probably the wrong document for this performance search.'
+        ? `${selectedDocumentLabel} did not contain extractable performance rows, so ${documentCount > 1 ? 'they are' : 'it is'} probably the wrong answer for this performance search.`
         : boardLikeSource
           ? 'This looks more like agenda context than a direct investment update, so it is not a strong answer to your infrastructure-commitment search.'
-          : 'The selected PDF did not contain extractable commitment values, so it is probably the wrong document for this search.',
+          : `${selectedDocumentLabel} did not contain extractable commitment values, so ${documentCount > 1 ? 'they are' : 'it is'} probably the wrong answer for this search.`,
       true,
     );
   }
@@ -156,15 +166,18 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
       focusMetricTypes,
       meaningfulMetrics,
       matchedFocusMetrics,
+      proxyFocusMetrics,
       missingFocusMetrics,
       performanceMetrics,
       actionableCommitments,
       infrastructureCommitments,
       true,
-      `Weak match: ${missingFocusMetrics.join(', ')} not found in the reviewed files.`,
-      broadAllocationMetrics.length > 0
-        ? 'The reviewed files contain real numbers, but mostly broad allocation or AUM rows rather than the requested performance multiples.'
-        : `The reviewed files contain real numbers, but ${missingFocusMetrics.join(', ')} were not found in the selected documents.`,
+      `Weak match: ${missingFocusMetrics.join(', ')} not found in ${documentCount > 1 ? 'the reviewed documents' : 'the reviewed file'}.`,
+      proxyFocusMetrics.length > 0
+        ? `The reviewed material surfaced proxy-style rows, but they do not count as direct hits for ${missingFocusMetrics.join(', ')}.`
+        : broadAllocationMetrics.length > 0
+        ? 'The reviewed material contains real numbers, but mostly broad allocation or AUM rows rather than the requested performance multiples.'
+        : `The reviewed material contains real numbers, but ${missingFocusMetrics.join(', ')} were not found in ${documentCount > 1 ? 'those documents' : 'the selected document'}.`,
       true,
     );
   }
@@ -181,6 +194,7 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
       focusMetricTypes,
       meaningfulMetrics,
       matchedFocusMetrics,
+      proxyFocusMetrics,
       missingFocusMetrics,
       performanceMetrics,
       actionableCommitments,
@@ -188,8 +202,8 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
       false,
       `Partial match: found ${matchedLabel.join(', ')} but not ${missingFocusMetrics.join(', ')}.`,
       broadAllocationMetrics.length > matchedFocusMetrics.length
-        ? `This PDF surfaced ${matchedLabel.join(', ')}, but ${missingFocusMetrics.join(', ')} were not found in this document. The system will try the next best report.`
-        : `Found ${matchedLabel.join(', ')} in this report, but ${missingFocusMetrics.join(', ')} not present in the reviewed documents.`,
+        ? `${documentCount > 1 ? 'These documents surfaced' : 'This PDF surfaced'} ${matchedLabel.join(', ')}, but ${missingFocusMetrics.join(', ')} were not found in ${documentCount > 1 ? 'them' : 'this document'}. The system will try the next best report.`
+        : `Found ${matchedLabel.join(', ')} in ${reportLabel}, but ${missingFocusMetrics.join(', ')} not present in ${documentCount > 1 ? 'the reviewed documents' : 'the reviewed file'}.`,
       false,
     );
   }
@@ -200,13 +214,14 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
       focusMetricTypes,
       meaningfulMetrics,
       matchedFocusMetrics,
+      proxyFocusMetrics,
       missingFocusMetrics,
       performanceMetrics,
       actionableCommitments,
       infrastructureCommitments,
       true,
-      'Weak match: this file does not contain direct performance metrics.',
-      'The selected PDF produced structured data, but not the performance figures this search is looking for.',
+      `Weak match: ${reviewedFileLabel} do${documentCount > 1 ? '' : 'es'} not contain direct performance metrics.`,
+      `${selectedDocumentLabel} produced structured data, but not the performance figures this search is looking for.`,
       true,
     );
   }
@@ -217,13 +232,14 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
       focusMetricTypes,
       meaningfulMetrics,
       matchedFocusMetrics,
+      proxyFocusMetrics,
       missingFocusMetrics,
       performanceMetrics,
       actionableCommitments,
       infrastructureCommitments,
       true,
-      'Weak match: no direct commitments were extracted from this file.',
-      'You got some structured lines out of the PDF, but not the actual commitment activity this search is trying to find.',
+      `Weak match: no direct commitments were extracted from ${reviewedFileLabel}.`,
+      `You got some structured lines out of ${selectedDocumentLabel}, but not the actual commitment activity this search is trying to find.`,
       true,
     );
   }
@@ -234,12 +250,13 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
       focusMetricTypes,
       meaningfulMetrics,
       matchedFocusMetrics,
+      proxyFocusMetrics,
       missingFocusMetrics,
       performanceMetrics,
       actionableCommitments,
       infrastructureCommitments,
       true,
-      'Weak match: this file does not show a direct infrastructure commitment.',
+      `Weak match: ${reviewedFileLabel} do${documentCount > 1 ? '' : 'es'} not show a direct infrastructure commitment.`,
       'The extracted metrics are real, but they do not line up with the infrastructure-commitment question yet. A different board packet, consent item, or investment memo is more likely to answer it.',
       true,
     );
@@ -255,13 +272,14 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
       focusMetricTypes,
       meaningfulMetrics,
       matchedFocusMetrics,
+      proxyFocusMetrics,
       missingFocusMetrics,
       performanceMetrics,
       actionableCommitments,
       infrastructureCommitments,
       true,
       'Weak match: this extraction is dominated by allocation rows, not performance multiples.',
-      'The document contains real portfolio figures, but it is not the right PDF for IRR, TVPI, or DPI. Try a private-markets combined portfolio or performance review PDF instead.',
+      `The reviewed material contains real portfolio figures, but ${documentCount > 1 ? 'these are not the right documents' : 'it is not the right PDF'} for IRR, TVPI, or DPI. Try a private-markets combined portfolio or performance review PDF instead.`,
       true,
     );
   }
@@ -271,6 +289,7 @@ export function assessLiveResult({ query, metrics, selectedSource }: AssessLiveR
     focusMetricTypes,
     meaningfulMetrics,
     matchedFocusMetrics,
+    proxyFocusMetrics,
     missingFocusMetrics,
     performanceMetrics,
     actionableCommitments,

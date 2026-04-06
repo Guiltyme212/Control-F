@@ -7,7 +7,7 @@ import { useToast } from '../hooks/useToast';
 import { ToastContainer } from '../components/Toast';
 import { exportToCSV, exportToJSON } from '../utils/export';
 import { assessLiveResult, isNoActivityValue } from '../utils/liveResultAssessment';
-import type { Metric } from '../data/types';
+import type { Metric, ReviewedDocument } from '../data/types';
 import { useAppContext } from '../context/AppContext';
 import { metricMatchesRequestedFocus } from '../utils/searchFocus';
 
@@ -124,6 +124,15 @@ function formatMetricList(metricTypes: string[]): string {
   return `${metricTypes.slice(0, -1).join(', ')}, and ${metricTypes[metricTypes.length - 1]}`;
 }
 
+function filenameFromUrl(url: string): string {
+  try {
+    const filename = decodeURIComponent(new URL(url).pathname.split('/').pop() || '');
+    return filename || 'selected.pdf';
+  } catch {
+    return 'selected.pdf';
+  }
+}
+
 function highlightEvidence(evidence: string, value: string): React.ReactNode {
   const candidates: string[] = [];
 
@@ -193,6 +202,12 @@ export function ResultsPage() {
               ? `${liveTracker.selectedSource.pensionFund} - ${liveTracker.selectedSource.label}`
               : 'Live search tracker',
             documentCount: liveTracker.selectedPdfUrls.length || 1,
+            reviewedDocuments: liveTracker.selectedPdfUrls.map((url) => ({
+              url,
+              filename: filenameFromUrl(url),
+              sourceLabel: liveTracker.selectedSource?.label ?? '',
+              status: 'selected',
+            } as ReviewedDocument)),
             createdAt: liveTracker.createdAt,
           }
         : null,
@@ -207,6 +222,7 @@ export function ResultsPage() {
             query: currentResults.query,
             metrics: currentResults.metrics,
             selectedSource: currentResults.selectedSource,
+            documentCount: currentResults.documentCount,
           })
         : null,
     [currentResults],
@@ -238,7 +254,12 @@ export function ResultsPage() {
     const availableAssetClasses = Array.from(new Set(displayMetrics.map((metric) => metric.asset_class).filter(Boolean)));
     return ['All', ...sortByPreferred(availableAssetClasses, preferredAssetClassOrder)];
   }, [displayMetrics]);
-  const documentCount = currentResults?.documentCount ?? new Set(displayMetrics.map((metric) => metric.source)).size;
+  const documentCount = currentResults?.reviewedDocuments?.length
+    ?? currentResults?.documentCount
+    ?? new Set(displayMetrics.map((metric) => metric.source)).size;
+  const reviewedDocuments = currentResults?.reviewedDocuments ?? [];
+  const reviewedDocumentNoun = documentCount === 1 ? 'PDF' : 'PDFs';
+  const reviewedDocumentPhrase = `${documentCount} reviewed ${reviewedDocumentNoun}`;
   const resultModeLabel = currentResults?.origin === 'upload-file'
     ? 'Uploaded PDF'
     : currentResults?.origin === 'upload-scrape'
@@ -294,7 +315,7 @@ export function ResultsPage() {
             ? liveAssessment.missingFocusMetrics.length > 0
               ? `Matched ${matchedFocusMetricLabel}; missing ${missingFocusMetricLabel}`
               : `Matched ${matchedFocusMetricLabel}`
-            : `No ${formatMetricList(liveAssessment.focusMetricTypes)} found in this file`,
+            : `No ${formatMetricList(liveAssessment.focusMetricTypes)} found in the reviewed ${reviewedDocumentNoun}`,
         };
       }
 
@@ -313,7 +334,7 @@ export function ResultsPage() {
       label: 'commitments found',
       sub: commitmentTotalStr,
     };
-  }, [actionableCommitmentCount, commitmentTotalStr, liveAssessment, matchedFocusMetricTypeCount, performanceMetricCount]);
+  }, [actionableCommitmentCount, commitmentTotalStr, liveAssessment, matchedFocusMetricTypeCount, performanceMetricCount, reviewedDocumentNoun]);
   const secondaryCount = useCountUp(secondaryStat.rawCount, 1200);
 
   const liveAlert = useMemo(() => {
@@ -330,10 +351,10 @@ export function ResultsPage() {
     const metricTypes = Array.from(new Set(meaningfulMetrics.map((m) => m.metric).filter(Boolean)));
     const fund = currentResults.selectedSource?.pensionFund || currentResults.title;
     if (assetClasses.length > 1) {
-      return `${fund}: found ${metricTypes.length} metric type${metricTypes.length === 1 ? '' : 's'} across ${assetClasses.length} asset classes from the latest report.`;
+      return `${fund}: found ${metricTypes.length} metric type${metricTypes.length === 1 ? '' : 's'} across ${assetClasses.length} asset classes from the reviewed document${documentCount === 1 ? '' : 's'}.`;
     }
-    return `${fund}: found ${meaningfulMetrics.length} data point${meaningfulMetrics.length === 1 ? '' : 's'} in the selected report.`;
-  }, [currentResults, liveAssessment]);
+    return `${fund}: found ${meaningfulMetrics.length} data point${meaningfulMetrics.length === 1 ? '' : 's'} in the reviewed document${documentCount === 1 ? '' : 's'}.`;
+  }, [currentResults, documentCount, liveAssessment]);
   const defaultMetricFilter = currentResults?.origin === 'live-search' && liveAssessment?.focusMetricTypes.length
     ? REQUESTED_METRICS_FILTER
     : 'All';
@@ -506,12 +527,31 @@ export function ResultsPage() {
         </motion.div>
       )}
 
+      {!!liveAssessment?.proxyFocusMetrics.length && (
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.25 }}
+          className="mb-6 flex items-start gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4"
+        >
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
+          <div>
+            <p className="text-sm font-medium text-text-primary">Proxy-style rows were surfaced, but they are not counted as exact hits.</p>
+            <p className="mt-1 text-sm text-text-secondary">
+              {formatMetricList(Array.from(new Set(liveAssessment.proxyFocusMetrics.map((metric) => metric.metric))))} appeared in the reviewed files, but Control F kept those separate from direct matches.
+            </p>
+          </div>
+        </motion.div>
+      )}
+
       {currentResults && (
         <div className="mb-6 flex items-center gap-2 rounded-xl border border-border bg-bg-card px-4 py-3 text-sm text-text-secondary">
           <FileText className="h-4 w-4 text-accent-light" />
           <span className="font-medium text-text-primary">{resultModeLabel}</span>
           <span className="text-text-muted">•</span>
           <span className="truncate">{currentResults.sourceSummary}</span>
+          <span className="text-text-muted">•</span>
+          <span>{reviewedDocumentPhrase}</span>
           {currentResults.selectedSource?.documentType && (
             <>
               <span className="text-text-muted">•</span>
@@ -555,6 +595,27 @@ export function ResultsPage() {
         </div>
       )}
 
+      {reviewedDocuments.length > 0 && (
+        <div className="mb-6 rounded-xl border border-border bg-bg-card px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+            <span className="font-medium text-text-primary">Reviewed files</span>
+            {reviewedDocuments.map((document) => (
+              <span key={document.url} className="rounded-full border border-border/80 bg-bg-hover px-2.5 py-1">
+                {document.filename}
+                {document.status === 'rejected'
+                  ? ` • skipped before Claude`
+                  : document.pageSubsetStrategy === 'filtered-subset'
+                    ? ` • ${document.pagesReviewed ?? document.reviewedPages?.length ?? 0}/${document.totalPages ?? 0} pages`
+                    : document.pagesReviewed
+                      ? ` • ${document.pagesReviewed} pages`
+                      : ''}
+                {document.costUsd !== undefined ? ` • $${document.costUsd.toFixed(3)}` : ''}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Answer Summary — What was found / What is missing */}
       {currentResults?.origin === 'live-search' && liveAssessment && (() => {
         const meaningful = currentResults.metrics.filter((m) => m.value.trim().toLowerCase() !== 'no activity');
@@ -590,17 +651,17 @@ export function ResultsPage() {
               <div className="space-y-1">
                 {missing.length > 0 && (
                   <p className="text-sm text-text-secondary">
-                    {formatMetricList(missing)} not found in reviewed documents
+                    {formatMetricList(missing)} not found in reviewed {reviewedDocumentNoun}
                   </p>
                 )}
                 {liveAssessment.isWeakMatch && (
                   <p className="text-sm text-text-secondary">{liveAssessment.detail}</p>
                 )}
                 {!hasGaps && (
-                  <p className="text-sm text-text-secondary">All requested metrics found in the selected report.</p>
+                  <p className="text-sm text-text-secondary">All requested metrics found in the reviewed {reviewedDocumentNoun}.</p>
                 )}
                 <p className="text-xs text-text-muted mt-1">
-                  {metricTypesFound.length} metric type{metricTypesFound.length === 1 ? '' : 's'} across {assetClasses.length} asset class{assetClasses.length === 1 ? '' : 'es'} from {documentCount} document{documentCount === 1 ? '' : 's'}
+                  {metricTypesFound.length} metric type{metricTypesFound.length === 1 ? '' : 's'} across {assetClasses.length} asset class{assetClasses.length === 1 ? '' : 'es'} from {reviewedDocumentPhrase}
                 </p>
               </div>
             </div>
@@ -615,10 +676,10 @@ export function ResultsPage() {
             ? {
                 value: matchedFocusMetricTypeCount,
                 label: `of ${liveAssessment.focusMetricTypes.length} target metrics`,
-                sub: `${metricsCount} total rows from ${documentCount} document${documentCount === 1 ? '' : 's'}`,
+                sub: `${metricsCount} total rows from ${reviewedDocumentPhrase}`,
                 icon: FileText,
               }
-            : { value: metricsCount, label: 'metrics extracted', sub: `from ${documentCount} document${documentCount === 1 ? '' : 's'}`, icon: FileText },
+            : { value: metricsCount, label: 'metrics extracted', sub: `from ${reviewedDocumentPhrase}`, icon: FileText },
           { value: secondaryCount, label: secondaryStat.label, sub: secondaryStat.sub, icon: DollarSign },
           { value: signalsCount, label: 'intelligence signals', sub: liveAssessment?.isWeakMatch ? 'hidden until relevance improves' : 'actionable insights', icon: Zap },
           { value: fundsCount, label: 'pension funds scanned', sub: isRealResult ? `from this ${resultModeLabel.toLowerCase()}` : 'US public funds', icon: BarChart3 },

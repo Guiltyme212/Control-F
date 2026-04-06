@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Settings, Bell, FileText, Activity, Zap } from 'lucide-react';
-import { Sidebar } from './components/Sidebar';
+import { Sidebar, EXPANDED_W, COLLAPSED_W } from './components/Sidebar';
 import { CommandPalette } from './components/CommandPalette';
 import { SettingsModal } from './components/SettingsModal';
 import { SearchPage } from './pages/SearchPage';
@@ -23,12 +23,13 @@ const pageOrder: Page[] = ['search', 'results', 'dashboard', 'trackers', 'upload
 interface FlyingTrackerCardProps {
   query: string;
   onComplete: () => void;
+  sidebarWidth: number;
 }
 
-function FlyingTrackerCard({ query, onComplete }: FlyingTrackerCardProps) {
+function FlyingTrackerCard({ query, onComplete, sidebarWidth }: FlyingTrackerCardProps) {
   const [landed, setLanded] = useState(false);
 
-  const SIDEBAR_W = 240;
+  const SIDEBAR_W = sidebarWidth;
   const PADDING = 24;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
@@ -171,6 +172,7 @@ function App() {
   const [activePage, setActivePage] = useState<Page>('search');
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const { setHasSearched, setSearchQuery, createLiveTracker } = useAppContext();
   const [flyingCard, setFlyingCard] = useState<string | null>(null);
 
@@ -179,6 +181,7 @@ function App() {
     createLiveTracker(seed);
     setFlyingCard(seed.query);
     setActivePage('dashboard');
+    setSidebarCollapsed(false); // expand sidebar when heading to dashboard
     setHasSearched(true);
   }, [createLiveTracker, setHasSearched, setSearchQuery]);
 
@@ -188,6 +191,9 @@ function App() {
 
   const handleNavigate = useCallback((page: Page) => {
     setActivePage(page);
+    if (page === 'dashboard') {
+      setSidebarCollapsed(false); // auto-expand on dashboard
+    }
     if (page !== 'dashboard') {
       setFlyingCard(null);
     }
@@ -228,7 +234,7 @@ function App() {
 
   return (
     <div className="flex w-full min-h-screen bg-bg-primary">
-      <Sidebar activePage={activePage} onNavigate={handleNavigate} />
+      <Sidebar activePage={activePage} onNavigate={handleNavigate} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(c => !c)} />
       <main className="flex-1 flex flex-col overflow-hidden">
         <AnimatePresence mode="wait">
           <motion.div
@@ -256,6 +262,7 @@ function App() {
             key="flying-tracker"
             query={flyingCard}
             onComplete={handleFlyingCardComplete}
+            sidebarWidth={sidebarCollapsed ? COLLAPSED_W : EXPANDED_W}
           />
         )}
       </AnimatePresence>

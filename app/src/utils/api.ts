@@ -1,5 +1,5 @@
 import { PDFDocument } from 'pdf-lib';
-import { scorePages, selectTopPages } from './pdfFilter';
+import { extractPdfPreviewText, earlyRejectCheck, scorePages, selectTopPages } from './pdfFilter';
 import { getFocusKeywords, getRequestedMetricTypes } from './searchFocus';
 import { sourceRegistry } from '../data/sourceRegistry';
 import type {
@@ -1020,6 +1020,7 @@ async function extractChunkWithPageMap(
 /* ------------------------------------------------------------------ */
 
 function mergeResults(results: ExtractionResult[]): ExtractionResult {
+  const reviewedPageNumbers = results.flatMap((r) => r.reviewedPageNumbers ?? []);
   return {
     metrics: results.flatMap((r) => r.metrics),
     signals: results.flatMap((r) => r.signals),
@@ -1030,6 +1031,15 @@ function mergeResults(results: ExtractionResult[]): ExtractionResult {
       reporting_period: '',
     },
     truncated: results.some((r) => r.truncated),
+    costUsd: results.reduce((sum, r) => sum + (r.costUsd ?? 0), 0),
+    inputTokens: results.reduce((sum, r) => sum + (r.inputTokens ?? 0), 0),
+    outputTokens: results.reduce((sum, r) => sum + (r.outputTokens ?? 0), 0),
+    elapsedSec: results.reduce((sum, r) => sum + (r.elapsedSec ?? 0), 0),
+    reviewedPageNumbers: reviewedPageNumbers.length > 0 ? reviewedPageNumbers : undefined,
+    totalPages: results[0]?.totalPages,
+    pageSubsetStrategy: results[0]?.pageSubsetStrategy,
+    wasEarlyRejected: results.some((r) => r.wasEarlyRejected),
+    skipReason: results.find((r) => r.skipReason)?.skipReason,
   };
 }
 
@@ -1046,6 +1056,11 @@ export interface ExtractionResult {
   inputTokens?: number;
   outputTokens?: number;
   elapsedSec?: number;
+  reviewedPageNumbers?: number[];
+  totalPages?: number;
+  pageSubsetStrategy?: 'preview-only' | 'full-document' | 'first-chunk-fallback' | 'filtered-subset';
+  wasEarlyRejected?: boolean;
+  skipReason?: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1184,7 +1199,7 @@ export async function extractMetricsFromPDF(
 
 export type LogFn = (message: string, status?: 'info' | 'done' | 'error') => void;
 
-function persistLog(message: string, status: string) {
+export function persistLog(message: string, status: string) {
   fetch('/api/log', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1192,7 +1207,7 @@ function persistLog(message: string, status: string) {
   }).catch(() => {});
 }
 
-function serverLog(event: string, data: Record<string, unknown>) {
+export function serverLog(event: string, data: Record<string, unknown>) {
   fetch('/api/server-log', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1206,6 +1221,17 @@ export function saveRunArtifact(artifact: Record<string, unknown>): void {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(artifact),
   }).catch(() => {});
+}
+
+function buildPageRange(startPage: number, endPage: number): number[] {
+  if (endPage < startPage) return [];
+  return Array.from({ length: endPage - startPage + 1 }, (_, index) => startPage + index);
+}
+
+function formatPageList(pages: number[]): string {
+  if (pages.length === 0) return 'none';
+  if (pages.length <= 8) return pages.join(', ');
+  return `${pages.slice(0, 8).join(', ')} ...`;
 }
 
 export async function extractMetricsFromPdfUrl(
@@ -1226,94 +1252,215 @@ export async function extractMetricsFromPdfUrl(
   };
 
   try {
+    const startedAt = Date.now();
 
-  // Step 1: Get PDF info (triggers server-side download + cache)
-  log('Downloading and analyzing PDF...');
-  const info = await getPdfInfo(pdfUrl);
-  log(`${info.totalPages} pages detected`, 'done');
+    // Step 1: Get PDF info (triggers server-side download + cache)
+    log('Downloading and analyzing PDF...');
+    const info = await getPdfInfo(pdfUrl);
+    log(`${info.totalPages} pages detected`, 'done');
+    serverLog('PDF_INFO', {
+      pdf: pdfFilename,
+      pdfUrl,
+      totalPages: info.totalPages,
+      chunkCount: info.chunkCount,
+    });
 
-  // Decide whether to use smart filtering
-  const hasFocusQuery = !!options.focusQuery;
-  const requestedMetricTypes = hasFocusQuery ? getRequestedMetricTypes(options.focusQuery!) : [];
-  const hasSpecificMetricFocus = requestedMetricTypes.some((metricType) =>
-    ['IRR', 'TVPI', 'DPI', 'NAV'].includes(metricType),
-  );
-  const hasSpecificFocus = requestedMetricTypes.some((m) => ['IRR', 'TVPI', 'DPI', 'NAV', 'AUM'].includes(m));
-  const effectiveExtractionMode = options.extractionMode ?? (hasSpecificFocus ? 'focused' : 'broad');
-  const effectiveOptions = { ...options, extractionMode: effectiveExtractionMode };
-  const shouldSmartFilter =
-    info.totalPages > SMART_FILTER_THRESHOLD ||
-    (hasFocusQuery && info.totalPages > FOCUSED_FILTER_THRESHOLD) ||
-    (hasSpecificMetricFocus && info.totalPages > SPECIFIC_METRIC_FILTER_THRESHOLD);
-  const maxFilteredPages = hasSpecificMetricFocus
-    ? SPECIFIC_METRIC_FILTER_MAX_PAGES
-    : info.totalPages > SMART_FILTER_THRESHOLD
-    ? SMART_FILTER_MAX_PAGES
-    : FOCUSED_FILTER_MAX_PAGES;
+    // Decide whether to use smart filtering
+    const hasFocusQuery = !!options.focusQuery;
+    const requestedMetricTypes = hasFocusQuery ? getRequestedMetricTypes(options.focusQuery!) : [];
+    const hasSpecificMetricFocus = requestedMetricTypes.some((metricType) =>
+      ['IRR', 'TVPI', 'DPI', 'NAV'].includes(metricType),
+    );
+    const hasSpecificFocus = requestedMetricTypes.some((metricType) =>
+      ['IRR', 'TVPI', 'DPI', 'NAV', 'AUM'].includes(metricType),
+    );
+    const effectiveExtractionMode = options.extractionMode ?? (hasSpecificFocus ? 'focused' : 'broad');
+    const effectiveOptions = { ...options, extractionMode: effectiveExtractionMode };
+    const shouldSmartFilter =
+      info.totalPages > SMART_FILTER_THRESHOLD ||
+      (hasFocusQuery && info.totalPages > FOCUSED_FILTER_THRESHOLD) ||
+      (hasSpecificMetricFocus && info.totalPages > SPECIFIC_METRIC_FILTER_THRESHOLD);
+    const maxFilteredPages = hasSpecificMetricFocus
+      ? SPECIFIC_METRIC_FILTER_MAX_PAGES
+      : info.totalPages > SMART_FILTER_THRESHOLD
+      ? SMART_FILTER_MAX_PAGES
+      : FOCUSED_FILTER_MAX_PAGES;
 
-  // Step 2: For small PDFs (or medium without focus), send directly
-  if (!shouldSmartFilter) {
-    log('Small document — sending directly to Claude...');
-    const base64 = await fetchPdfChunk(pdfUrl, 0);
-    log('Extracting financial metrics...', 'info');
-    const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, effectiveOptions);
-    log(`Found ${result.metrics.length} metrics in ${result.elapsedSec?.toFixed(1) ?? '?'}s — ${result.inputTokens ?? 0} in / ${result.outputTokens ?? 0} out tokens ($${result.costUsd?.toFixed(3) ?? '?'})`, 'done');
-    return result;
-  }
+    // Step 2: Cheap preview preflight before any expensive extraction
+    const previewPages = buildPageRange(1, Math.min(info.totalPages, 5));
+    if (previewPages.length > 0) {
+      log(`Preview preflight: scanning pages ${formatPageList(previewPages)} for off-target signals...`);
+      try {
+        const previewBytes = await fetchPdfPreviewSubset(pdfUrl, previewPages);
+        const previewText = await extractPdfPreviewText(previewBytes, previewPages.length);
+        const scannedPreviewPages = previewPages.slice(0, previewText.pagesScanned);
+        const rejectCheck = earlyRejectCheck(previewText.text, options.focusQuery);
 
-  // Smart filtering — score pages and send only the most relevant
-  log(`${info.totalPages} pages — scanning for the most relevant pages...`);
-  const fullPdfResponse = await fetchWithTimeout(
-    `/proxy-pdf?url=${encodeURIComponent(pdfUrl)}`,
-    {},
-    PDF_PROXY_TIMEOUT_MS,
-    'Timed out while downloading the full PDF for analysis.',
-  );
-  if (!fullPdfResponse.ok) throw new Error(`Failed to download PDF (${fullPdfResponse.status})`);
-  const pdfBytes = new Uint8Array(await fullPdfResponse.arrayBuffer());
-  log(`Downloaded ${(pdfBytes.length / 1024 / 1024).toFixed(1)} MB`, 'done');
+        serverLog('PDF_PREVIEW_PREFLIGHT', {
+          pdf: pdfFilename,
+          pdfUrl,
+          requestedMetricTypes,
+          pagesScanned: scannedPreviewPages,
+          shouldReject: rejectCheck.shouldReject,
+          rejectReason: rejectCheck.reason,
+          corporateSignals: rejectCheck.corporateSignals,
+          pensionSignals: rejectCheck.pensionSignals,
+          confidence: rejectCheck.confidence,
+        });
 
-  // Score every page for financial keywords
-  log(`Scanning ${info.totalPages} pages for financial content...`);
-  const focusKeywordsForScoring = hasFocusQuery
-    ? getFocusKeywords(options.focusQuery!, detectSearchIntents(options.focusQuery!))
-    : [];
-  const scores = await scorePages(pdfBytes, focusKeywordsForScoring);
-  const relevantPages = selectTopPages(scores, maxFilteredPages);
+        if (rejectCheck.shouldReject) {
+          log(`Skipped extraction: ${rejectCheck.reason}`, 'info');
+          if (rejectCheck.corporateSignals.length > 0) {
+            log(`Reject signals: ${rejectCheck.corporateSignals.slice(0, 4).join(', ')}`, 'info');
+          }
+          serverLog('EXTRACTION_SKIPPED', {
+            pdf: pdfFilename,
+            pdfUrl,
+            strategy: 'preview-only',
+            reviewedPages: scannedPreviewPages,
+            reason: rejectCheck.reason,
+            corporateSignals: rejectCheck.corporateSignals,
+            pensionSignals: rejectCheck.pensionSignals,
+          });
 
-  if (relevantPages.length === 0) {
-    log('No financial keywords found — using first chunk as fallback', 'info');
-    const base64 = await fetchPdfChunk(pdfUrl, 0);
-    return extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, effectiveOptions);
-  }
+          return {
+            metrics: [],
+            signals: [{ signal_type: 'Early Reject', description: rejectCheck.reason }],
+            metadata: {
+              source_organization: '',
+              document_type: 'rejected',
+              document_date: '',
+              reporting_period: '',
+            },
+            costUsd: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            elapsedSec: parseFloat(((Date.now() - startedAt) / 1000).toFixed(1)),
+            reviewedPageNumbers: scannedPreviewPages,
+            totalPages: info.totalPages,
+            pageSubsetStrategy: 'preview-only',
+            wasEarlyRejected: true,
+            skipReason: rejectCheck.reason,
+          };
+        }
 
-  log(`Found ${relevantPages.length} relevant pages (of ${info.totalPages})`, 'done');
+        log(`Preview passed: no hard reject signals on pages ${formatPageList(scannedPreviewPages)}.`, 'done');
+      } catch (previewError) {
+        const previewMessage = previewError instanceof Error ? previewError.message : 'unknown preview error';
+        log('Preview preflight unavailable — continuing with extraction.', 'info');
+        serverLog('PDF_PREVIEW_PREFLIGHT_ERROR', {
+          pdf: pdfFilename,
+          pdfUrl,
+          error: previewMessage,
+        });
+      }
+    }
 
-  // Create subset PDF
-  log('Building subset PDF with relevant pages...');
-  const pagesParam = relevantPages.join(',');
-  const subsetResponse = await fetchWithTimeout(
-    `/proxy-pdf-subset?url=${encodeURIComponent(pdfUrl)}&pages=${pagesParam}`,
-    {},
-    PDF_PROXY_TIMEOUT_MS,
-    'Timed out while preparing the filtered PDF subset.',
-  );
-  if (!subsetResponse.ok) {
-    const body = await subsetResponse.text().catch(() => '');
-    throw new Error(`PDF subset creation failed: ${body || subsetResponse.statusText}`);
-  }
-  const subsetBytes = new Uint8Array(await subsetResponse.arrayBuffer());
-  const subsetBase64 = uint8ToBase64(subsetBytes);
-  log(`Subset: ${relevantPages.length} pages, ${(subsetBytes.length / 1024).toFixed(0)} KB`, 'done');
+    // Step 3: For small PDFs (or medium without focus), send directly
+    if (!shouldSmartFilter) {
+      const reviewedPageNumbers = buildPageRange(1, info.totalPages);
+      log(`Page subset strategy: full document (${info.totalPages} pages).`);
+      serverLog('PAGE_FILTER_RESULT', {
+        pdf: pdfFilename,
+        pdfUrl,
+        strategy: 'full-document',
+        reviewedPages: reviewedPageNumbers,
+        totalPages: info.totalPages,
+      });
+      log('Small document — sending directly to Claude...');
+      const base64 = await fetchPdfChunk(pdfUrl, 0);
+      log('Extracting financial metrics...', 'info');
+      const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, effectiveOptions);
+      log(`Found ${result.metrics.length} metrics in ${result.elapsedSec?.toFixed(1) ?? '?'}s — ${result.inputTokens ?? 0} in / ${result.outputTokens ?? 0} out tokens ($${result.costUsd?.toFixed(3) ?? '?'})`, 'done');
+      return {
+        ...result,
+        reviewedPageNumbers,
+        totalPages: info.totalPages,
+        pageSubsetStrategy: 'full-document',
+      };
+    }
 
-  // Send to Claude
-  log('Sending to Claude for extraction...');
-  const result = await extractChunkWithPageMap(
-    subsetBase64, apiKey, pdfFilename, relevantPages, info.totalPages, effectiveOptions,
-  );
-  log(`Extracted ${result.metrics.length} metrics in ${result.elapsedSec?.toFixed(1) ?? '?'}s — ${result.inputTokens ?? 0} in / ${result.outputTokens ?? 0} out tokens ($${result.costUsd?.toFixed(3) ?? '?'})`, 'done');
+    // Step 4: Smart filtering — score pages and send only the most relevant
+    log(`${info.totalPages} pages — scanning for the most relevant pages...`);
+    const fullPdfResponse = await fetchWithTimeout(
+      `/proxy-pdf?url=${encodeURIComponent(pdfUrl)}`,
+      {},
+      PDF_PROXY_TIMEOUT_MS,
+      'Timed out while downloading the full PDF for analysis.',
+    );
+    if (!fullPdfResponse.ok) throw new Error(`Failed to download PDF (${fullPdfResponse.status})`);
+    const pdfBytes = new Uint8Array(await fullPdfResponse.arrayBuffer());
+    log(`Downloaded ${(pdfBytes.length / 1024 / 1024).toFixed(1)} MB`, 'done');
 
-  return result;
+    log(`Scanning ${info.totalPages} pages for financial content...`);
+    const focusKeywordsForScoring = hasFocusQuery
+      ? getFocusKeywords(options.focusQuery!, detectSearchIntents(options.focusQuery!))
+      : [];
+    const scores = await scorePages(pdfBytes, focusKeywordsForScoring);
+    const relevantPages = selectTopPages(scores, maxFilteredPages);
+
+    if (relevantPages.length === 0) {
+      const fallbackPages = buildPageRange(1, Math.min(MAX_PDF_PAGES, info.totalPages));
+      log('No financial keywords found — using first chunk as fallback', 'info');
+      log(`Page subset strategy: first chunk fallback (${fallbackPages.length} pages).`, 'info');
+      serverLog('PAGE_FILTER_RESULT', {
+        pdf: pdfFilename,
+        pdfUrl,
+        strategy: 'first-chunk-fallback',
+        reviewedPages: fallbackPages,
+        totalPages: info.totalPages,
+        reason: 'no keyword hits',
+      });
+      const base64 = await fetchPdfChunk(pdfUrl, 0);
+      const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, effectiveOptions);
+      log(`Extracted ${result.metrics.length} metrics in ${result.elapsedSec?.toFixed(1) ?? '?'}s — ${result.inputTokens ?? 0} in / ${result.outputTokens ?? 0} out tokens ($${result.costUsd?.toFixed(3) ?? '?'})`, 'done');
+      return {
+        ...result,
+        reviewedPageNumbers: fallbackPages,
+        totalPages: info.totalPages,
+        pageSubsetStrategy: 'first-chunk-fallback',
+      };
+    }
+
+    log(`Found ${relevantPages.length} relevant pages (of ${info.totalPages})`, 'done');
+    log(`Page subset strategy: filtered subset (${relevantPages.length} pages): ${formatPageList(relevantPages)}`, 'done');
+    serverLog('PAGE_FILTER_RESULT', {
+      pdf: pdfFilename,
+      pdfUrl,
+      strategy: 'filtered-subset',
+      reviewedPages: relevantPages,
+      totalPages: info.totalPages,
+      requestedMetricTypes,
+    });
+
+    log('Building subset PDF with relevant pages...');
+    const pagesParam = relevantPages.join(',');
+    const subsetResponse = await fetchWithTimeout(
+      `/proxy-pdf-subset?url=${encodeURIComponent(pdfUrl)}&pages=${pagesParam}`,
+      {},
+      PDF_PROXY_TIMEOUT_MS,
+      'Timed out while preparing the filtered PDF subset.',
+    );
+    if (!subsetResponse.ok) {
+      const body = await subsetResponse.text().catch(() => '');
+      throw new Error(`PDF subset creation failed: ${body || subsetResponse.statusText}`);
+    }
+    const subsetBytes = new Uint8Array(await subsetResponse.arrayBuffer());
+    const subsetBase64 = uint8ToBase64(subsetBytes);
+    log(`Subset: ${relevantPages.length} pages, ${(subsetBytes.length / 1024).toFixed(0)} KB`, 'done');
+
+    log('Sending to Claude for extraction...');
+    const result = await extractChunkWithPageMap(
+      subsetBase64, apiKey, pdfFilename, relevantPages, info.totalPages, effectiveOptions,
+    );
+    log(`Extracted ${result.metrics.length} metrics in ${result.elapsedSec?.toFixed(1) ?? '?'}s — ${result.inputTokens ?? 0} in / ${result.outputTokens ?? 0} out tokens ($${result.costUsd?.toFixed(3) ?? '?'})`, 'done');
+
+    return {
+      ...result,
+      reviewedPageNumbers: relevantPages,
+      totalPages: info.totalPages,
+      pageSubsetStrategy: 'filtered-subset',
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'PDF extraction failed.';
     log(message, 'error');

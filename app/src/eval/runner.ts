@@ -443,14 +443,11 @@ export async function runCase(
         costUsd: 0, inputTokens: 0, outputTokens: 0, elapsedSec: 0,
       };
       const score = scoreCase(goldCase, emptyResult);
-      // For negative controls, early reject = PASS
-      if (isNegativeControl) score.passed = true;
-      score.grade = isNegativeControl ? 'pass' : 'fail';
 
       const artifact: RunArtifact = {
         caseId: goldCase.id, timestamp: new Date().toISOString(),
         pdfFile: goldCase.evidencePdf, pdfSizeBytes: pdfBytes.length,
-        totalPages, pagesReviewed: 0, extractedMetrics: [], signals: [],
+        totalPages, pagesReviewed: preview.pagesScanned, extractedMetrics: [], signals: [],
         documentMetadata: emptyResult.metadata, score,
         costUsd: 0, inputTokens: 0, outputTokens: 0, elapsedSec: 0,
       };

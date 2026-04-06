@@ -172,7 +172,31 @@ export interface ActiveResults {
   selectedSource: SourceSearchCandidate | null;
   sourceSummary: string;
   documentCount: number;
+  reviewedDocuments?: ReviewedDocument[];
+  totalCostUsd?: number;
+  totalElapsedSec?: number;
   createdAt: string;
+}
+
+export interface ReviewedDocument {
+  url: string;
+  filename: string;
+  sourceLabel: string;
+  sourceUrl?: string;
+  status: 'selected' | 'extracted' | 'rejected' | 'failed';
+  selectionRole?: 'selected' | 'retried' | 'skipped';
+  selectionReason?: string;
+  previewScore?: number | null;
+  previewMatchedMetrics?: string[];
+  previewNegativeSignals?: string[];
+  reviewedPages?: number[];
+  pagesReviewed?: number;
+  previewPagesScanned?: number;
+  totalPages?: number;
+  pageSubsetStrategy?: 'preview-only' | 'full-document' | 'first-chunk-fallback' | 'filtered-subset';
+  skipReason?: string;
+  costUsd?: number;
+  elapsedSec?: number;
 }
 
 export type Page = 'search' | 'results' | 'dashboard' | 'trackers' | 'upload' | 'eval';

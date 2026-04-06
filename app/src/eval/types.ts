@@ -134,6 +134,8 @@ export interface EvalRunSummary {
   runId: string;
   timestamp: string;
   casesRun: number;
+  positiveCases?: number;
+  negativeCases?: number;
   passed: number;
   partial: number;
   weak: number;
@@ -141,7 +143,9 @@ export interface EvalRunSummary {
   rejectedIncorrectly: number;
   failed: number;
   totalCostUsd: number;
+  averageCostUsd?: number;
   totalElapsedSec: number;
+  averageElapsedSec?: number;
   scores: CaseScore[];
 }
 
