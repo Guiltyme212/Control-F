@@ -81,6 +81,7 @@ export function AppProvider({ children }: AppProviderProps) {
       selectedSource: null,
       pdfLinks: [],
       selectedPdfUrls: [],
+      attemptedPdfUrls: [],
       extractionLogs: [],
       progress: { current: 0, total: 0, currentFile: '' },
       foundMetrics: [],

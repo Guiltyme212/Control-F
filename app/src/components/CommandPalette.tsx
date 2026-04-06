@@ -14,7 +14,7 @@ interface CommandPaletteProps {
 const pageItems: { id: Page; label: string; icon: React.ElementType; shortcut: string }[] = [
   { id: 'search', label: 'Search', icon: Search, shortcut: 'Alt+1' },
   { id: 'results', label: 'Results', icon: LayoutGrid, shortcut: 'Alt+2' },
-  { id: 'dashboard', label: 'Dashboard', icon: BarChart3, shortcut: 'Alt+3' },
+  { id: 'monitor', label: 'Monitor', icon: BarChart3, shortcut: 'Alt+3' },
   { id: 'trackers', label: 'Trackers', icon: Bell, shortcut: 'Alt+4' },
   { id: 'upload', label: 'Upload', icon: Upload, shortcut: 'Alt+5' },
 ];

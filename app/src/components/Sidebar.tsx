@@ -5,7 +5,7 @@ import { metrics, trackers } from '../data/metrics';
 
 const navItems: { id: Page; label: string; icon: React.ElementType; badge?: string }[] = [
   { id: 'search', label: 'Search', icon: Search },
-  { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
+  { id: 'monitor', label: 'Monitor', icon: BarChart3 },
   { id: 'results', label: 'Results', icon: LayoutGrid, badge: String(metrics.length) },
   { id: 'trackers', label: 'Trackers', icon: Bell, badge: String(trackers.filter(t => t.status === 'active').length) },
   { id: 'upload', label: 'Upload', icon: Upload },

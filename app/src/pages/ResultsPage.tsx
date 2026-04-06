@@ -10,6 +10,8 @@ import { assessLiveResult, isNoActivityValue } from '../utils/liveResultAssessme
 import type { Metric, ReviewedDocument } from '../data/types';
 import { useAppContext } from '../context/AppContext';
 import { metricMatchesRequestedFocus } from '../utils/searchFocus';
+import { deriveSignalsFromMetrics } from '../utils/deriveSignals';
+import { formatDisplayValue } from '../utils/formatValue';
 
 const preferredMetricOrder = [
   'Commitment',
@@ -195,6 +197,7 @@ export function ResultsPage() {
             origin: 'live-search' as const,
             title: liveTracker.query,
             query: liveTracker.query,
+            assetClassHints: liveTracker.assetClasses,
             metrics: liveTracker.foundMetrics,
             signals: liveTracker.foundSignals,
             selectedSource: liveTracker.selectedSource,
@@ -220,6 +223,7 @@ export function ResultsPage() {
       currentResults?.origin === 'live-search'
         ? assessLiveResult({
             query: currentResults.query,
+            assetClassHints: currentResults.assetClassHints,
             metrics: currentResults.metrics,
             selectedSource: currentResults.selectedSource,
             documentCount: currentResults.documentCount,
@@ -233,10 +237,12 @@ export function ResultsPage() {
     () => (currentResults?.metrics.length ? currentResults.metrics : metrics),
     [currentResults],
   );
-  const displaySignals = useMemo(
-    () => (currentResults ? (liveAssessment?.hideSignals ? [] : currentResults.signals) : signals),
-    [currentResults, liveAssessment],
-  );
+  const displaySignals = useMemo(() => {
+    if (!currentResults) return signals;
+    if (liveAssessment?.hideSignals) return [];
+    if (currentResults.signals.length > 0) return currentResults.signals;
+    return deriveSignalsFromMetrics(currentResults.metrics);
+  }, [currentResults, liveAssessment, signals]);
   const metricOptions = useMemo(() => {
     const availableMetrics = Array.from(
       new Set([
@@ -380,6 +386,11 @@ export function ResultsPage() {
     });
     return result;
   }, [displayMetrics, liveAssessment, selectedAssetFilter, selectedMetricFilter, sortDir, sortField]);
+
+  const uniformLp = useMemo(() => {
+    const lps = new Set(filtered.map((m) => m.lp).filter(Boolean));
+    return lps.size === 1 ? [...lps][0] : null;
+  }, [filtered]);
 
   const toggleSort = (field: SortField) => {
     if (sortField === field) {
@@ -631,11 +642,15 @@ export function ResultsPage() {
               <div className="space-y-1">
                 {assetClasses.slice(0, 6).map((ac) => {
                   const acMetrics = meaningful.filter((m) => m.asset_class === ac);
-                  const types = Array.from(new Set(acMetrics.map((m) => m.metric)));
+                  const seen = new Set<string>();
+                  const uniqueByType = acMetrics.filter((m) => { if (seen.has(m.metric)) return false; seen.add(m.metric); return true; });
+                  const valueParts = uniqueByType.slice(0, 4).map((m) => `${m.metric} ${formatDisplayValue(m.value)}`);
+                  const extra = uniqueByType.length - 4;
                   return (
                     <p key={ac} className="text-sm text-text-secondary">
                       <span className="text-text-primary font-medium">{ac}</span>
-                      <span className="text-text-muted"> — {types.join(', ')}</span>
+                      <span className="text-text-muted"> — </span>
+                      <span className="font-mono text-xs text-text-secondary">{valueParts.join(' · ')}{extra > 0 ? ` + ${extra} more` : ''}</span>
                     </p>
                   );
                 })}
@@ -892,13 +907,19 @@ export function ResultsPage() {
       </div>
 
       {/* Results Table */}
+      {uniformLp && (
+        <p className="text-xs text-text-muted mb-2">
+          <Building2 className="w-3 h-3 inline mr-1" />
+          LP: <span className="text-text-secondary font-medium">{uniformLp}</span>
+        </p>
+      )}
       <div className="bg-bg-card border border-border rounded-xl overflow-hidden">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border text-left">
               {([
                 ['date', 'Date'],
-                ['lp', 'LP'],
+                ...(uniformLp ? [] : [['lp', 'LP']]),
                 ['fund', 'Fund'],
                 ['gp', 'GP/Manager'],
                 ['metric', 'Metric'],
@@ -926,6 +947,7 @@ export function ResultsPage() {
                 index={i}
                 isExpanded={expandedRow === i}
                 onToggle={() => setExpandedRow(expandedRow === i ? null : i)}
+                hideLp={!!uniformLp}
               />
             ))}
           </tbody>
@@ -937,11 +959,12 @@ export function ResultsPage() {
   );
 }
 
-function TableRow({ metric: m, index, isExpanded, onToggle }: {
+function TableRow({ metric: m, index, isExpanded, onToggle, hideLp }: {
   metric: Metric;
   index: number;
   isExpanded: boolean;
   onToggle: () => void;
+  hideLp?: boolean;
 }) {
   return (
     <>
@@ -955,7 +978,7 @@ function TableRow({ metric: m, index, isExpanded, onToggle }: {
         }`}
       >
         <td className="px-4 py-3 text-text-muted whitespace-nowrap">{m.date}</td>
-        <td className="px-4 py-3 text-text-primary font-medium whitespace-nowrap">{m.lp}</td>
+        {!hideLp && <td className="px-4 py-3 text-text-primary font-medium whitespace-nowrap">{m.lp}</td>}
         <td className="px-4 py-3 text-text-primary max-w-48 truncate">{m.fund}</td>
         <td className="px-4 py-3 text-text-secondary whitespace-nowrap">{m.gp}</td>
         <td className="px-4 py-3">
@@ -963,7 +986,7 @@ function TableRow({ metric: m, index, isExpanded, onToggle }: {
             {m.metric}
           </span>
         </td>
-        <td className="px-4 py-3 text-text-primary font-mono text-xs whitespace-nowrap">{m.value}</td>
+        <td className="px-4 py-3 text-text-primary font-mono text-xs whitespace-nowrap">{formatDisplayValue(m.value)}</td>
         <td className="px-4 py-3 text-text-secondary text-xs">{m.asset_class}</td>
         <td className="px-4 py-3 text-text-muted text-xs max-w-24 truncate">{m.source}</td>
         <td className="px-4 py-3 text-text-muted text-xs">{m.page}</td>
@@ -976,7 +999,7 @@ function TableRow({ metric: m, index, isExpanded, onToggle }: {
             exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.25 }}
           >
-            <td colSpan={9} className="px-0 py-0">
+            <td colSpan={hideLp ? 8 : 9} className="px-0 py-0">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}

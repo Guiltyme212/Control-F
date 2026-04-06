@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Zap, Sparkles, Bell, Activity, X, Plus, ChevronRight } from 'lucide-react';
 import { GradientDots } from '@/components/ui/gradient-dots';
 import type { LiveSearchTrackerSeed, AlertMode } from '../data/types';
+import { pensionFundNames } from '../data/sourceRegistry';
+import { parseQueryConfig } from '../utils/queryParser';
 
 const presets = [
   'PSERS private markets IRR, TVPI, DPI, and NAV',
@@ -34,7 +36,7 @@ type Phase = 'idle' | 'refine' | 'lifting' | 'thinking' | 'morphing';
 /*  Refine constants                                                   */
 /* ------------------------------------------------------------------ */
 
-const ALL_ENTITIES = ['PSERS', 'Minnesota SBI', 'SAMCERA'];
+const ALL_ENTITIES: string[] = [...pensionFundNames];
 const ALL_METRICS = ['Commitments', 'NAV', 'IRR', 'TVPI', 'DPI', 'Terminations', 'Manager Changes', 'AUM', 'Fund Registrations'];
 const ALL_ASSET_CLASSES = ['Infrastructure', 'Private Equity', 'Credit', 'Real Assets', 'Natural Resources', 'Real Estate', 'Public Equities'];
 const FREQUENCIES = ['Daily', 'Weekly', 'Monthly'] as const;
@@ -301,7 +303,7 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
     const q = searchQuery || query;
     if (searchQuery) setQuery(q);
     // Pre-populate refine options based on query
-    const config = PRESET_CONFIGS[q] || DEFAULT_CONFIG;
+    const config = PRESET_CONFIGS[q] || parseQueryConfig(q);
     setRefineEntities(config.entities);
     setRefineMetrics(config.metrics);
     setRefineAssetClasses(config.assetClasses);
@@ -505,8 +507,16 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                         if (e.key === 'Enter' && query.trim()) handleSearch();
                       }}
                       placeholder="Search any fund, metric, or document..."
-                      className="w-full bg-transparent rounded-xl pl-12 pr-4 py-4 text-text-primary placeholder:text-text-muted focus:outline-none text-base"
+                      className="w-full bg-transparent rounded-xl pl-12 pr-12 py-4 text-text-primary placeholder:text-text-muted focus:outline-none text-base"
                     />
+                    {query.trim() && (
+                      <button
+                        onClick={() => handleSearch()}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg bg-accent/20 hover:bg-accent/40 text-accent-light transition-colors"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>

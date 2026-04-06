@@ -446,20 +446,46 @@ function scoreCase(goldCase, result) {
 
   let grade;
   if (goldCase.documentFamily === 'negative-control') {
-    grade = result.earlyRejected ? 'REJECTED_CORRECTLY' : 'REJECTED_INCORRECTLY';
+    if (result.earlyRejected) {
+      grade = 'rejected-correctly';
+    } else if (forbiddenFound.length === 0) {
+      grade = 'handled-safely';
+    } else {
+      grade = 'rejected-incorrectly';
+    }
   } else if (total === 0) {
-    grade = 'PASS';
+    grade = 'pass';
   } else if (found === total) {
-    grade = 'PASS';
+    grade = 'pass';
   } else if (found > 0 && goldCase.partialAcceptable) {
-    grade = 'PARTIAL';
+    grade = 'partial';
   } else if (found > 0) {
-    grade = 'WEAK';
+    grade = 'weak';
   } else {
-    grade = 'FAIL';
+    grade = 'fail';
   }
 
-  return { caseId: goldCase.id, caseName: goldCase.name, grade, found, total, metricMatches, forbiddenFound, ...result };
+  const passed = grade === 'pass' || grade === 'rejected-correctly' || grade === 'handled-safely' || (grade === 'partial' && goldCase.partialAcceptable);
+
+  return {
+    caseId: goldCase.id,
+    caseName: goldCase.name,
+    query: goldCase.query,
+    grade,
+    passed,
+    found,
+    total,
+    metricsFound: found,
+    metricsExpected: total,
+    metricMatches,
+    forbiddenFound,
+    forbiddenMetricsFound: forbiddenFound,
+    ...result,
+  };
+}
+
+function hasGrade(result, ...grades) {
+  return grades.includes(String(result.grade || '').toLowerCase().replace(/_/g, '-'));
 }
 
 // ---------------------------------------------------------------------------
@@ -538,9 +564,13 @@ async function main() {
         const isNeg = gc.documentFamily === 'negative-control';
         allResults.push({
           caseId: gc.id, caseName: gc.name,
-          grade: isNeg ? 'REJECTED_CORRECTLY' : 'REJECTED_INCORRECTLY',
+          query: gc.query,
+          grade: isNeg ? 'rejected-correctly' : 'rejected-incorrectly',
+          passed: isNeg,
           found: 0, total: gc.expectedMetrics.length,
+          metricsFound: 0, metricsExpected: gc.expectedMetrics.length,
           metricMatches: [], forbiddenFound: [],
+          forbiddenMetricsFound: [],
           metrics: [], costUsd: 0, elapsedSec: 0,
           earlyRejected: true, rejectReason: earlyReject.reason,
         });
@@ -560,12 +590,13 @@ async function main() {
 
       // Print result
       const icon =
-        score.grade === 'PASS' ? '[PASS]'
-          : score.grade === 'PARTIAL' ? '[PART]'
-            : score.grade === 'WEAK' ? '[WEAK]'
-              : score.grade === 'REJECTED_CORRECTLY' ? '[REJ-OK]'
-                : score.grade === 'REJECTED_INCORRECTLY' ? '[REJ-BAD]'
-                  : '[FAIL]';
+        hasGrade(score, 'pass') ? '[PASS]'
+          : hasGrade(score, 'partial') ? '[PART]'
+            : hasGrade(score, 'weak') ? '[WEAK]'
+              : hasGrade(score, 'rejected-correctly') ? '[REJ-OK]'
+                : hasGrade(score, 'handled-safely') ? '[SAFE]'
+                  : hasGrade(score, 'rejected-incorrectly') ? '[REJ-BAD]'
+                    : '[FAIL]';
       console.log(`  ${icon} ${score.found}/${score.total} metrics matched`);
 
       for (const mm of score.metricMatches) {
@@ -581,7 +612,7 @@ async function main() {
       }
     } catch (err) {
       console.log(`  [ERROR] ${err.message}`);
-      allResults.push({ caseId: gc.id, caseName: gc.name, grade: 'ERROR', error: err.message });
+      allResults.push({ caseId: gc.id, caseName: gc.name, query: gc.query, grade: 'error', passed: false, error: err.message });
     }
   }
 
@@ -590,26 +621,30 @@ async function main() {
   console.log('  SUMMARY');
   console.log('='.repeat(70));
 
-  const passed = allResults.filter(r => r.grade === 'PASS').length;
-  const partial = allResults.filter(r => r.grade === 'PARTIAL').length;
-  const weak = allResults.filter(r => r.grade === 'WEAK').length;
-  const rejectedCorrectly = allResults.filter(r => r.grade === 'REJECTED_CORRECTLY').length;
-  const rejectedIncorrectly = allResults.filter(r => r.grade === 'REJECTED_INCORRECTLY').length;
-  const failed = allResults.filter(r => r.grade === 'FAIL' || r.grade === 'ERROR').length;
+  const passed = allResults.filter(r => r.passed).length;
+  const partial = allResults.filter(r => hasGrade(r, 'partial')).length;
+  const weak = allResults.filter(r => hasGrade(r, 'weak')).length;
+  const rejectedCorrectly = allResults.filter(r => hasGrade(r, 'rejected-correctly')).length;
+  const handledSafely = allResults.filter(r => hasGrade(r, 'handled-safely')).length;
+  const rejectedIncorrectly = allResults.filter(r => hasGrade(r, 'rejected-incorrectly')).length;
+  const failed = allResults.filter(r => hasGrade(r, 'fail', 'error')).length;
+  const totalElapsedSec = allResults.reduce((sum, r) => sum + (r.elapsedSec || 0), 0);
+  const avgElapsedSec = allResults.length > 0 ? totalElapsedSec / allResults.length : 0;
   const avgCost = allResults.length > 0 ? totalCost / allResults.length : 0;
 
-  console.log(`  PASS: ${passed}  |  PARTIAL: ${partial}  |  WEAK: ${weak}  |  REJ-OK: ${rejectedCorrectly}  |  REJ-BAD: ${rejectedIncorrectly}  |  FAIL: ${failed}  /  ${allResults.length} total`);
-  console.log(`  Total cost: $${totalCost.toFixed(4)}  |  Avg/case: $${avgCost.toFixed(4)}`);
+  console.log(`  PASS: ${passed}  |  PARTIAL: ${partial}  |  WEAK: ${weak}  |  REJ-OK: ${rejectedCorrectly}  |  SAFE: ${handledSafely}  |  REJ-BAD: ${rejectedIncorrectly}  |  FAIL: ${failed}  /  ${allResults.length} total`);
+  console.log(`  Total cost: $${totalCost.toFixed(4)}  |  Avg/case: $${avgCost.toFixed(4)}  |  Avg latency: ${avgElapsedSec.toFixed(1)}s`);
   console.log();
 
   for (const r of allResults) {
     const icon =
-      r.grade === 'PASS' ? 'PASS'
-        : r.grade === 'PARTIAL' ? 'PART'
-          : r.grade === 'WEAK' ? 'WEAK'
-            : r.grade === 'REJECTED_CORRECTLY' ? 'REJ-OK'
-              : r.grade === 'REJECTED_INCORRECTLY' ? 'REJ-BAD'
-                : 'FAIL';
+      hasGrade(r, 'pass') ? 'PASS'
+        : hasGrade(r, 'partial') ? 'PART'
+          : hasGrade(r, 'weak') ? 'WEAK'
+            : hasGrade(r, 'rejected-correctly') ? 'REJ-OK'
+              : hasGrade(r, 'handled-safely') ? 'SAFE'
+                : hasGrade(r, 'rejected-incorrectly') ? 'REJ-BAD'
+                  : 'FAIL';
     console.log(`  [${icon}]  ${r.caseId}: ${r.caseName}`);
   }
 
@@ -636,23 +671,28 @@ async function main() {
 
     const prevResults = Array.isArray(prevRun.results) ? prevRun.results : [];
     const prevPassed = prevResults.length > 0
-      ? prevResults.filter(r => !String(r.caseId).startsWith('N') && r.grade === 'PASS').length
+      ? prevResults.filter(r => r.passed === true || hasGrade(r, 'pass', 'rejected-correctly', 'handled-safely')).length
       : (prevRun.passed ?? 0);
     const prevPartial = prevResults.length > 0
-      ? prevResults.filter(r => !String(r.caseId).startsWith('N') && r.grade === 'PARTIAL').length
+      ? prevResults.filter(r => !String(r.caseId).startsWith('N') && hasGrade(r, 'partial')).length
       : (prevRun.partial ?? 0);
     const prevWeak = prevResults.length > 0
-      ? prevResults.filter(r => !String(r.caseId).startsWith('N') && r.grade === 'WEAK').length
+      ? prevResults.filter(r => !String(r.caseId).startsWith('N') && hasGrade(r, 'weak')).length
       : (prevRun.weak ?? 0);
     const prevRejectedCorrectly = prevResults.length > 0
-      ? prevResults.filter(r => r.grade === 'REJECTED_CORRECTLY').length
+      ? prevResults.filter(r => hasGrade(r, 'rejected-correctly')).length
       : (prevRun.rejectedCorrectly ?? 0);
+    const prevHandledSafely = prevResults.length > 0
+      ? prevResults.filter(r => hasGrade(r, 'handled-safely')).length
+      : (prevRun.handledSafely ?? 0);
     const prevRejectedIncorrectly = prevResults.length > 0
-      ? prevResults.filter(r => r.grade === 'REJECTED_INCORRECTLY').length
+      ? prevResults.filter(r => hasGrade(r, 'rejected-incorrectly')).length
       : (prevRun.rejectedIncorrectly ?? 0);
     const prevCost = prevRun.totalCostUsd ?? prevRun.totalCost ?? 0;
     const prevCases = prevRun.casesRun ?? 0;
     const prevAvgCost = prevCases > 0 ? prevCost / prevCases : 0;
+    const prevElapsed = prevRun.totalElapsedSec ?? prevResults.reduce((sum, r) => sum + (r.elapsedSec || 0), 0);
+    const prevAvgElapsed = prevCases > 0 ? prevElapsed / prevCases : 0;
     const currAvgCost = allResults.length > 0 ? totalCost / allResults.length : 0;
 
     const delta = (curr, prev, unit = '') => {
@@ -662,10 +702,12 @@ async function main() {
       return `  (${arrow}${diff.toFixed(unit === '$' ? 4 : 0)}${unit})`;
     };
 
-    console.log(`  Positive quality: PASS ${passed} vs ${prevPassed}${delta(passed, prevPassed)}  |  PARTIAL ${partial} vs ${prevPartial}${delta(partial, prevPartial)}  |  WEAK ${weak} vs ${prevWeak}${delta(weak, prevWeak)}`);
-    console.log(`  Negative controls: REJ-OK ${rejectedCorrectly} vs ${prevRejectedCorrectly}${delta(rejectedCorrectly, prevRejectedCorrectly)}  |  REJ-BAD ${rejectedIncorrectly} vs ${prevRejectedIncorrectly}${delta(rejectedIncorrectly, prevRejectedIncorrectly)}`);
+    console.log(`  Overall passing: ${passed}/${allResults.length}  vs  ${prevPassed}/${prevCases}${delta(passed, prevPassed)}`);
+    console.log(`  Positive quality: PASS ${allResults.filter(r => !String(r.caseId).startsWith('N') && hasGrade(r, 'pass')).length} vs ${prevResults.filter(r => !String(r.caseId).startsWith('N') && hasGrade(r, 'pass')).length}  |  PARTIAL ${partial} vs ${prevPartial}${delta(partial, prevPartial)}  |  WEAK ${weak} vs ${prevWeak}${delta(weak, prevWeak)}`);
+    console.log(`  Negative controls: REJ-OK ${rejectedCorrectly} vs ${prevRejectedCorrectly}${delta(rejectedCorrectly, prevRejectedCorrectly)}  |  SAFE ${handledSafely} vs ${prevHandledSafely}${delta(handledSafely, prevHandledSafely)}  |  REJ-BAD ${rejectedIncorrectly} vs ${prevRejectedIncorrectly}${delta(rejectedIncorrectly, prevRejectedIncorrectly)}`);
     console.log(`  Total cost: $${totalCost.toFixed(4)}  vs  $${prevCost.toFixed(4)}${delta(totalCost, prevCost, '$')}`);
     console.log(`  Avg/case:   $${currAvgCost.toFixed(4)}  vs  $${prevAvgCost.toFixed(4)}${delta(currAvgCost, prevAvgCost, '$')}`);
+    console.log(`  Avg time:   ${avgElapsedSec.toFixed(1)}s  vs  ${prevAvgElapsed.toFixed(1)}s${delta(avgElapsedSec, prevAvgElapsed)}`);
 
     // Per-case changes
     const prevResultMap = {};
@@ -676,7 +718,7 @@ async function main() {
     for (const r of allResults) {
       const prev = prevResultMap[r.caseId];
       if (!prev) { changes.push(`  NEW   ${r.caseId}: ${r.grade}`); continue; }
-      if (prev.grade !== r.grade) {
+      if (String(prev.grade || '').toLowerCase() !== String(r.grade || '').toLowerCase()) {
         changes.push(`  ${r.caseId}: ${prev.grade} → ${r.grade}`);
       }
     }
@@ -696,11 +738,15 @@ async function main() {
     casesRun: allResults.length,
     positiveCases: allResults.filter(r => !String(r.caseId).startsWith('N')).length,
     negativeCases: allResults.filter(r => String(r.caseId).startsWith('N')).length,
-    passed, partial, weak, rejectedCorrectly, rejectedIncorrectly, failed,
+    runId: 'gold-eval',
+    passed, partial, weak, rejectedCorrectly, handledSafely, rejectedIncorrectly, failed,
     totalCost,
     totalCostUsd: totalCost,
     averageCostUsd: avgCost,
+    totalElapsedSec,
+    averageElapsedSec: avgElapsedSec,
     results: allResults,
+    scores: allResults,
   }, null, 2));
   console.log(`\n  Results saved to: ${outFile}`);
   console.log();

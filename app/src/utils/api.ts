@@ -27,7 +27,7 @@ const CLAUDE_TIMEOUT_MS = 300000;
 
 export type ScrapedPdfLink = PdfLink;
 
-const SYSTEM_PROMPT = `You are a financial data extraction agent specialized in US public pension fund documents.
+const SYSTEM_PROMPT_BROAD = `You are a financial data extraction agent specialized in US public pension fund documents.
 
 You will receive a PDF document from a public pension fund (board meeting minutes, transaction reports, investment memos, performance reports, IPC reports).
 
@@ -78,6 +78,67 @@ Rules:
 7. Co-investments: separate entries from main fund commitments
 8. Capture target fund size and target returns
 9. When a search focus is provided, extract ALL rows for each requested metric type (e.g. if the user asks for IRR, TVPI, DPI, and NAV — extract every row for all four). Only skip unrelated tables that do not contain ANY of the requested metrics.`;
+
+function buildFocusedSystemPrompt(metricTypes: string[]): string {
+  const typeList = metricTypes.join(', ');
+  return `You are a financial data extraction agent specialized in US public pension fund documents.
+
+You will receive a PDF document from a public pension fund. Your task is NARROWLY SCOPED: extract ONLY ${typeList} metrics.
+
+Return ONLY valid JSON (no markdown fences, no explanation, no preamble) with this structure:
+
+{
+  "document_metadata": {
+    "source_organization": "string",
+    "document_type": "string",
+    "document_date": "YYYY-MM-DD",
+    "reporting_period": "string"
+  },
+  "extracted_metrics": [
+    {
+      "date": "YYYY-MM-DD",
+      "lp_name": "string",
+      "fund_name": "string",
+      "gp_manager": "string",
+      "metric_type": "${typeList}",
+      "value": "string — preserve original format",
+      "currency": "USD | EUR | GBP",
+      "asset_class": "string",
+      "strategy": "string",
+      "page_reference": "number or null",
+      "evidence_text": "key phrase from document, max 80 chars",
+      "confidence": "high | medium | low"
+    }
+  ],
+  "cross_reference_signals": [
+    {
+      "signal_type": "string",
+      "description": "string"
+    }
+  ]
+}
+
+Rules:
+1. ONLY extract metrics of type ${typeList}. Do NOT extract commitments, fees, allocations, or any other metric types.
+2. Extract one row per asset class or sub-strategy (e.g. Private Equity, Real Estate, Credit, Infrastructure, Total Private Markets). Do NOT extract individual GP/manager-level rows.
+3. For each asset class, create separate entries for each requested metric type. Never skip one because you already extracted the others.
+4. For performance metrics (IRR, TVPI, DPI), extract ONLY the inception-to-date (ITD) or since-inception value. Do NOT create separate rows for different time horizons (1-year, 3-year, 5-year, 10-year, etc.).
+5. Always include evidence_text.
+6. Keep the response concise — only the requested metrics, nothing else.`;
+}
+
+function getSystemPrompt(focusQuery?: string): string {
+  if (!focusQuery) return SYSTEM_PROMPT_BROAD;
+  const normalized = normalizeForSearch(focusQuery);
+  const metricTypes: string[] = [];
+  if (normalized.includes('irr')) metricTypes.push('IRR');
+  if (normalized.includes('tvpi')) metricTypes.push('TVPI');
+  if (normalized.includes('dpi')) metricTypes.push('DPI');
+  if (normalized.includes('nav')) metricTypes.push('NAV');
+  if (normalized.includes('aum')) metricTypes.push('AUM');
+  if (metricTypes.length > 0) return buildFocusedSystemPrompt(metricTypes);
+  return SYSTEM_PROMPT_BROAD;
+}
 
 
 
@@ -725,6 +786,9 @@ async function extractChunk(
   const startTime = Date.now();
   const pdfSizeKB = Math.round((base64.length * 3) / 4 / 1024);
   const isChunked = totalPages > MAX_PDF_PAGES;
+  const systemPrompt = getSystemPrompt(options.focusQuery);
+  const isFocused = systemPrompt !== SYSTEM_PROMPT_BROAD;
+  const maxTokens = isFocused ? 16000 : 32000;
   const userText = isChunked
     ? `Extract all financial metrics from this document. This is pages ${pageOffset + 1}–${Math.min(pageOffset + MAX_PDF_PAGES, totalPages)} of a ${totalPages}-page document. Report page_reference relative to the original document (add ${pageOffset} to any page number you see).`
     : 'Extract all financial metrics from this document.';
@@ -737,7 +801,7 @@ async function extractChunk(
     totalPages,
     pageOffset,
     model: 'claude-sonnet-4-6',
-    maxTokens: 32000,
+    maxTokens,
   });
 
   const response = await fetchWithTimeout(
@@ -752,8 +816,8 @@ async function extractChunk(
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 32000,
-        system: SYSTEM_PROMPT,
+        max_tokens: maxTokens,
+        system: systemPrompt,
         messages: [
           {
             role: 'user',
@@ -833,6 +897,14 @@ async function extractChunk(
 
   const parsed = parseOrSalvageJson(textBlock.text);
 
+  // Log raw response when extraction returns zero metrics for debugging
+  if (!parsed.extracted_metrics?.length) {
+    serverLog('EXTRACTION_EMPTY', {
+      source: sourceName,
+      rawResponsePreview: textBlock.text.slice(0, 500),
+    });
+  }
+
   const metrics: Metric[] = (parsed.extracted_metrics || []).map((am) => ({
     date: am.date || '',
     lp: am.lp_name || '',
@@ -887,9 +959,11 @@ async function extractChunkWithPageMap(
     .map((orig, i) => `page ${i + 1} in this PDF = page ${orig} in the original`)
     .join(', ');
 
+  const systemPrompt = getSystemPrompt(options.focusQuery);
+  const isFocused = systemPrompt !== SYSTEM_PROMPT_BROAD;
+  const maxTokens = isFocused ? 16000 : 32000;
   const userText = `Extract all financial metrics from this document. This is a filtered subset (${originalPageNumbers.length} pages) of a ${totalPages}-page document. Page mapping: ${pageMapStr}. Report page_reference using the ORIGINAL document page numbers.`;
   const focusedUserText = `${userText}${buildFocusInstruction(options.focusQuery)}`;
-  const focusedMaxTokens = 32000;
 
   serverLog('API_REQUEST', {
     function: 'extractChunkWithPageMap',
@@ -898,7 +972,7 @@ async function extractChunkWithPageMap(
     subsetPages: originalPageNumbers.length,
     totalPages,
     model: 'claude-sonnet-4-6',
-    maxTokens: focusedMaxTokens,
+    maxTokens,
   });
 
   const response = await fetchWithTimeout(
@@ -913,8 +987,8 @@ async function extractChunkWithPageMap(
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: focusedMaxTokens,
-        system: SYSTEM_PROMPT,
+        max_tokens: maxTokens,
+        system: systemPrompt,
         messages: [
           {
             role: 'user',
@@ -977,6 +1051,14 @@ async function extractChunkWithPageMap(
   if (!textBlock?.text) throw new Error('No text content in API response');
 
   const parsed = parseOrSalvageJson(textBlock.text);
+
+  // Log raw response when extraction returns zero metrics for debugging
+  if (!parsed.extracted_metrics?.length) {
+    serverLog('EXTRACTION_EMPTY', {
+      source: sourceName,
+      rawResponsePreview: textBlock.text.slice(0, 800),
+    });
+  }
 
   const metrics: Metric[] = (parsed.extracted_metrics || []).map((am) => ({
     date: am.date || '',

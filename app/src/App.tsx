@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Settings, Bell, FileText, Activity, Zap } from 'lucide-react';
 import { Sidebar, EXPANDED_W, COLLAPSED_W } from './components/Sidebar';
@@ -6,7 +6,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { SettingsModal } from './components/SettingsModal';
 import { SearchPage } from './pages/SearchPage';
 import { ResultsPage } from './pages/ResultsPage';
-import { DashboardPage } from './pages/DashboardPage';
+import { MonitorPage } from './pages/MonitorPage';
 import { TrackersPage } from './pages/TrackersPage';
 import { UploadPage } from './pages/UploadPage';
 import { EvalPage } from './pages/EvalPage';
@@ -14,7 +14,7 @@ import { useAppContext } from './context/AppContext';
 import { metrics } from './data/metrics';
 import type { LiveSearchTrackerSeed, Page } from './data/types';
 
-const pageOrder: Page[] = ['search', 'results', 'dashboard', 'trackers', 'upload', 'eval'];
+const pageOrder: Page[] = ['search', 'results', 'monitor', 'trackers', 'upload', 'eval'];
 
 /* ------------------------------------------------------------------ */
 /*  Flying Tracker Card — animates from search center to dashboard    */
@@ -26,40 +26,87 @@ interface FlyingTrackerCardProps {
   sidebarWidth: number;
 }
 
+interface TrackerFlightRect {
+  top: number;
+  left: number;
+  width: number;
+}
+
 function FlyingTrackerCard({ query, onComplete, sidebarWidth }: FlyingTrackerCardProps) {
   const [landed, setLanded] = useState(false);
+  const [targetRect, setTargetRect] = useState<TrackerFlightRect | null>(null);
+  const completionTriggeredRef = useRef(false);
 
   const SIDEBAR_W = sidebarWidth;
   const PADDING = 24;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const contentW = vw - SIDEBAR_W;
-  const startW = 380;
-  const endW = (contentW - PADDING * 2 - 12) / 2; // Half of grid (2 cols, gap-3 = 12px)
+  const startW = Math.min(380, Math.max(300, contentW - PADDING * 2));
+  const startTop = Math.max(88, vh / 2 - 56);
+  const startLeft = SIDEBAR_W + Math.max(PADDING, (contentW - startW) / 2);
 
-  // Card lands at the tracker cards section (below hero stats)
-  const endTop = 188;
-  const endLeft = SIDEBAR_W + PADDING;
+  const fallbackTargetRect = useMemo<TrackerFlightRect>(() => {
+    const containerW = Math.min(1100, Math.max(320, contentW - PADDING * 2));
+    return {
+      top: 212,
+      left: SIDEBAR_W + Math.max(PADDING, (contentW - containerW) / 2),
+      width: containerW,
+    };
+  }, [SIDEBAR_W, contentW]);
 
-  // Offset to center of content area (where the bubble was)
-  const offsetX = (contentW - startW) / 2 - PADDING;
-  const offsetY = vh / 2 - 40 - endTop;
+  useLayoutEffect(() => {
+    let frameId = 0;
+    let cancelled = false;
+    const startedAt = performance.now();
+
+    const measureTarget = () => {
+      if (cancelled) return;
+
+      const target = document.querySelector('[data-live-tracker-slot="true"]') as HTMLElement | null;
+      if (target) {
+        const rect = target.getBoundingClientRect();
+        if (rect.width > 0) {
+          setTargetRect({
+            top: rect.top,
+            left: rect.left,
+            width: rect.width,
+          });
+          return;
+        }
+      }
+
+      if (performance.now() - startedAt > 900) {
+        setTargetRect(fallbackTargetRect);
+        return;
+      }
+
+      frameId = window.requestAnimationFrame(measureTarget);
+    };
+
+    frameId = window.requestAnimationFrame(measureTarget);
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [fallbackTargetRect]);
 
   return (
     <motion.div
       className="fixed pointer-events-none"
-      style={{ top: endTop, left: endLeft, zIndex: 60 }}
+      style={{ zIndex: 60 }}
       initial={{
-        x: offsetX,
-        y: offsetY,
+        top: startTop,
+        left: startLeft,
         width: startW,
         opacity: 1,
         scale: 1.04,
       }}
       animate={{
-        x: 0,
-        y: 0,
-        width: endW,
+        top: targetRect?.top ?? startTop,
+        left: targetRect?.left ?? startLeft,
+        width: targetRect?.width ?? startW,
         opacity: 1,
         scale: 1,
       }}
@@ -76,6 +123,8 @@ function FlyingTrackerCard({ query, onComplete, sidebarWidth }: FlyingTrackerCar
         scale: { type: 'spring', stiffness: 300, damping: 28 },
       }}
       onAnimationComplete={() => {
+        if (!targetRect || completionTriggeredRef.current) return;
+        completionTriggeredRef.current = true;
         setLanded(true);
         setTimeout(onComplete, 250);
       }}
@@ -180,7 +229,7 @@ function App() {
     setSearchQuery(seed.query);
     createLiveTracker(seed);
     setFlyingCard(seed.query);
-    setActivePage('dashboard');
+    setActivePage('monitor');
     setSidebarCollapsed(false); // expand sidebar when heading to dashboard
     setHasSearched(true);
   }, [createLiveTracker, setHasSearched, setSearchQuery]);
@@ -191,10 +240,10 @@ function App() {
 
   const handleNavigate = useCallback((page: Page) => {
     setActivePage(page);
-    if (page === 'dashboard') {
+    if (page === 'monitor') {
       setSidebarCollapsed(false); // auto-expand on dashboard
     }
-    if (page !== 'dashboard') {
+    if (page !== 'monitor') {
       setFlyingCard(null);
     }
   }, []);
@@ -247,7 +296,7 @@ function App() {
           >
             {activePage === 'search' && <SearchPage onSearchComplete={handleSearchComplete} />}
             {activePage === 'results' && <ResultsPage />}
-            {activePage === 'dashboard' && <DashboardPage onNavigate={handleNavigate} />}
+            {activePage === 'monitor' && <MonitorPage onNavigate={handleNavigate} trackerArrivalInProgress={Boolean(flyingCard)} />}
             {activePage === 'trackers' && <TrackersPage onNavigate={handleNavigate} />}
             {activePage === 'upload' && <UploadPage onNavigate={handleNavigate} />}
             {activePage === 'eval' && <EvalPage />}

@@ -120,7 +120,7 @@ export interface CaseScore {
 
   /* Overall */
   passed: boolean;
-  grade: 'pass' | 'partial' | 'weak' | 'rejected-correctly' | 'rejected-incorrectly' | 'fail';
+  grade: 'pass' | 'partial' | 'weak' | 'rejected-correctly' | 'handled-safely' | 'rejected-incorrectly' | 'fail';
 
   /* Cost / performance */
   costUsd?: number;
@@ -140,6 +140,7 @@ export interface EvalRunSummary {
   partial: number;
   weak: number;
   rejectedCorrectly: number;
+  handledSafely: number;
   rejectedIncorrectly: number;
   failed: number;
   totalCostUsd: number;

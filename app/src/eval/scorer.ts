@@ -19,6 +19,7 @@ export function formatGradeLabel(grade: CaseScore['grade']): string {
     partial: 'Partial',
     weak: 'Weak',
     'rejected-correctly': 'Rejected correctly',
+    'handled-safely': 'Handled safely',
     'rejected-incorrectly': 'Rejected incorrectly',
     fail: 'Fail',
   };
@@ -54,17 +55,27 @@ export interface NegativeControlOutcome {
 }
 
 export function describeNegativeControlOutcome(score: CaseScore): NegativeControlOutcome {
-  const rejected = score.grade === 'rejected-correctly';
+  if (score.grade === 'rejected-correctly') {
+    return {
+      expected: 'Reject or handle safely',
+      observed: 'Detected as off-target — rejected before extraction. No cost incurred.',
+      result: 'Blocked',
+    };
+  }
+  if (score.grade === 'handled-safely') {
+    return {
+      expected: 'Reject or handle safely',
+      observed: 'No performance metrics in this document. Claude confirmed absence — no wrong data returned.',
+      result: 'Handled safely',
+    };
+  }
   const forbiddenCount = score.forbiddenMetricsFound.length;
-
   return {
-    expected: 'Reject the document before extraction',
-    observed: rejected
-      ? 'Rejected before Claude extraction'
-      : forbiddenCount > 0
-        ? `Extraction continued and surfaced ${forbiddenCount} off-target metric(s)`
-        : 'Extraction continued, but no forbidden metrics surfaced',
-    result: formatGradeLabel(score.grade),
+    expected: 'Reject or handle safely',
+    observed: forbiddenCount > 0
+      ? `Extraction surfaced ${forbiddenCount} off-target metric type(s)`
+      : 'Extraction continued with uncertain results',
+    result: 'Needs improvement',
   };
 }
 
@@ -321,11 +332,15 @@ export function scoreCase(
 
   // Determine grade
   const wasEarlyRejected = result.metadata?.document_type === 'rejected';
-  let grade: 'pass' | 'partial' | 'weak' | 'rejected-correctly' | 'rejected-incorrectly' | 'fail';
+  let grade: CaseScore['grade'];
 
   if (goldCase.documentFamily === 'negative-control') {
     if (wasEarlyRejected) {
       grade = 'rejected-correctly';
+    } else if (negativePassed) {
+      // Not early-rejected, but no forbidden metrics surfaced
+      // Claude correctly identified absence (e.g. "No activity")
+      grade = 'handled-safely';
     } else {
       grade = 'rejected-incorrectly';
     }
@@ -342,7 +357,7 @@ export function scoreCase(
     grade = 'fail';
   }
 
-  const passed = grade === 'pass' || grade === 'rejected-correctly' ||
+  const passed = grade === 'pass' || grade === 'rejected-correctly' || grade === 'handled-safely' ||
     (grade === 'partial' && goldCase.partialAcceptable);
 
   return {
@@ -392,6 +407,7 @@ export function buildRunSummary(
     partial: scores.filter((s) => s.grade === 'partial').length,
     weak: scores.filter((s) => s.grade === 'weak').length,
     rejectedCorrectly: scores.filter((s) => s.grade === 'rejected-correctly').length,
+    handledSafely: scores.filter((s) => s.grade === 'handled-safely').length,
     rejectedIncorrectly: scores.filter((s) => s.grade === 'rejected-incorrectly').length,
     failed: scores.filter((s) => !s.passed).length,
     totalCostUsd,
@@ -424,7 +440,7 @@ export function formatReport(summary: EvalRunSummary): string {
   lines.push('');
   lines.push(`  OVERALL:  ${summary.passed}/${summary.casesRun} passing`);
   lines.push(`  POSITIVE CASES: ${positivePassing}/${stats.positiveCases} passing  |  ${summary.partial} partial  |  ${summary.weak} weak  |  ${summary.failed} not passing`);
-  lines.push(`  NEGATIVE CONTROLS: ${summary.rejectedCorrectly}/${stats.negativeCases} rejected correctly  |  ${summary.rejectedIncorrectly} rejected incorrectly`);
+  lines.push(`  NEGATIVE CONTROLS: ${summary.rejectedCorrectly} blocked  |  ${summary.handledSafely} handled safely  |  ${summary.rejectedIncorrectly} needs work`);
   lines.push(`  COST:     $${summary.totalCostUsd.toFixed(4)} total  |  $${stats.averageCostUsd.toFixed(4)} avg/case`);
   lines.push(`  TIME:     ${summary.totalElapsedSec.toFixed(1)}s total  |  ${stats.averageElapsedSec.toFixed(1)}s avg/case`);
   lines.push('');

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import {
-  Activity, FileText, Zap, Sparkles, Clock, Database,
+  FileText, Zap, Sparkles, Database,
   CheckCircle2, Eye, AlertCircle, ShieldX, Plus,
   Play, Pause, Pencil, RotateCw, SlidersHorizontal,
 } from 'lucide-react';
@@ -267,16 +267,8 @@ function TrackerHeroCard({ tracker, index }: { tracker: DashboardTracker; index:
   return card;
 }
 
-function DonutLabel({ viewBox, total }: { viewBox?: { cx: number; cy: number }; total: string }) {
-  if (!viewBox) return null;
-  const { cx, cy } = viewBox;
-  return (
-    <text x={cx} y={cy} textAnchor="middle" dominantBaseline="central">
-      <tspan x={cx} y={cy - 6} className="fill-text-primary text-lg font-bold">{total}</tspan>
-      <tspan x={cx} y={cy + 12} className="fill-text-muted text-[10px]">focus mix</tspan>
-    </text>
-  );
-}
+// DonutLabel — reserved for future donut chart center label
+// function DonutLabel({ viewBox, total }: { viewBox?: { cx: number; cy: number }; total: string }) { ... }
 
 /* ================================================================
    Main Dashboard

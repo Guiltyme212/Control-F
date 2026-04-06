@@ -14,6 +14,7 @@ interface AssessLiveResultArgs {
   metrics: Metric[];
   selectedSource?: SourceSearchCandidate | null;
   documentCount?: number;
+  assetClassHints?: string[];
 }
 
 export type CompletenessLabel = 'complete' | 'partial' | 'partial-subset' | 'weak';
@@ -104,7 +105,7 @@ function buildAssessment(
   };
 }
 
-export function assessLiveResult({ query, metrics, selectedSource, documentCount = 1 }: AssessLiveResultArgs): LiveResultAssessment | null {
+export function assessLiveResult({ query, metrics, selectedSource, documentCount = 1, assetClassHints = [] }: AssessLiveResultArgs): LiveResultAssessment | null {
   if (!metrics.length) {
     return null;
   }
@@ -113,8 +114,11 @@ export function assessLiveResult({ query, metrics, selectedSource, documentCount
   const normalizedQuery = query.toLowerCase();
   const focusMetricTypes = getFocusMetricTargets(query);
   const meaningfulMetrics = metrics.filter((metric) => !isNoActivityValue(metric.value));
+  const scopedMeaningfulMetrics = assetClassHints.length > 0
+    ? meaningfulMetrics.filter((metric) => assetClassMatches(metric.asset_class, assetClassHints))
+    : meaningfulMetrics;
   const focusMatchedMetrics = focusMetricTypes.length
-    ? meaningfulMetrics.filter((metric) => metricMatchesRequestedFocus(metric, focusMetricTypes))
+    ? scopedMeaningfulMetrics.filter((metric) => metricMatchesRequestedFocus(metric, focusMetricTypes))
     : [];
   const proxyFocusMetrics = focusMatchedMetrics.filter((metric) => isProxyMetricMatch(metric));
   const matchedFocusMetrics = focusMatchedMetrics.filter((metric) => !isProxyMetricMatch(metric));
@@ -122,15 +126,15 @@ export function assessLiveResult({ query, metrics, selectedSource, documentCount
     focusMetricTypes.filter((metricType) => !matchedFocusMetrics.some((metric) => metricMatchesRequestedFocus(metric, [metricType]))),
   );
   const performanceMetrics = meaningfulMetrics.filter((metric) => PERFORMANCE_METRIC_TYPES.has(metric.metric));
-  const actionableCommitments = meaningfulMetrics.filter(
+  const actionableCommitments = scopedMeaningfulMetrics.filter(
     (metric) => metric.metric === 'Commitment' || metric.metric === 'Co-Investment',
   );
   const infrastructureCommitments = actionableCommitments.filter((metric) =>
     ['infrastructure', 'real assets'].some((keyword) => metricText(metric).includes(keyword)),
   );
   const boardLikeSource = selectedSource?.documentType === 'meeting' || selectedSource?.documentType === 'minutes';
-  const broadAllocationMetrics = meaningfulMetrics.filter((metric) => isBroadAllocationMetric(metric.metric));
-  const performanceMultipleMetrics = meaningfulMetrics.filter((metric) => isPerformanceMultiple(metric.metric));
+  const broadAllocationMetrics = scopedMeaningfulMetrics.filter((metric) => isBroadAllocationMetric(metric.metric));
+  const performanceMultipleMetrics = scopedMeaningfulMetrics.filter((metric) => isPerformanceMultiple(metric.metric));
   const matchedFocusMetricTypes = sortMetricNames(
     focusMetricTypes.filter((metricType) => matchedFocusMetrics.some((metric) => metricMatchesRequestedFocus(metric, [metricType]))),
   );
@@ -244,7 +248,7 @@ export function assessLiveResult({ query, metrics, selectedSource, documentCount
     );
   }
 
-  if (normalizedQuery.includes('infrastructure') && infrastructureCommitments.length === 0) {
+  if (intents.includes('commitment') && normalizedQuery.includes('infrastructure') && infrastructureCommitments.length === 0) {
     return buildAssessment(
       intents,
       focusMetricTypes,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   AlertTriangle,
@@ -16,7 +16,54 @@ import { extractPdfPreviewText, scorePreviewText, scoreFreshness, earlyRejectChe
 import { assessLiveResult, computeCoverageScore, shouldAutoRetry } from '../utils/liveResultAssessment';
 import { useAppContext } from '../context/AppContext';
 import type { Metric, Page, PdfLink, PdfScorecard, ReviewedDocument, SearchIntent, Signal, SourceSearchCandidate } from '../data/types';
-import { getFocusKeywords, getFocusMetricTargets } from '../utils/searchFocus';
+import { getFocusKeywords, getFocusMetricTargets, metricMatchesRequestedFocus } from '../utils/searchFocus';
+import { formatDisplayValue } from '../utils/formatValue';
+
+/* Metric badge colors — same as ResultsPage */
+const TRACKER_METRIC_COLORS: Record<string, string> = {
+  'Commitment': 'bg-green/20 text-green-light',
+  'Termination': 'bg-red/20 text-red',
+  'Performance': 'bg-blue/20 text-blue',
+  'Co-Investment': 'bg-cyan/20 text-cyan',
+  'Fee Structure': 'bg-yellow/20 text-yellow',
+  'AUM': 'bg-purple/20 text-purple',
+  'NAV': 'bg-purple/20 text-purple',
+  'IRR': 'bg-cyan/20 text-cyan',
+  'TVPI': 'bg-blue/20 text-blue',
+  'DPI': 'bg-green/20 text-green-light',
+  'Asset Allocation': 'bg-slate-500/20 text-slate-200',
+  'Management Fee': 'bg-yellow/20 text-yellow',
+  'Carry': 'bg-orange/20 text-orange',
+  'Target Fund Size': 'bg-orange/20 text-orange',
+  'Target Return': 'bg-blue/20 text-blue',
+  'Distribution': 'bg-orange/20 text-orange',
+  'Capital Call': 'bg-red/20 text-red',
+};
+
+/* Evidence highlighting — same as ResultsPage */
+function trackerHighlightEvidence(evidence: string, value: string): React.ReactNode {
+  const candidates: string[] = [value];
+  const numMatch = value.match(/^[$\u20AC]?([\d,.]+)/);
+  if (numMatch) {
+    const rawNum = numMatch[1].replace(/,/g, '');
+    const num = parseFloat(rawNum);
+    if (num >= 1_000_000_000) candidates.push(`$${num / 1_000_000_000} billion`);
+    if (num >= 1_000_000) candidates.push(`$${num / 1_000_000}M`, `$${num / 1_000_000} million`);
+    candidates.push(numMatch[0]);
+  }
+  const pctMatch = value.match(/([\d.]+%)/);
+  if (pctMatch) candidates.push(pctMatch[1]);
+  for (const candidate of candidates) {
+    const idx = evidence.toLowerCase().indexOf(candidate.toLowerCase());
+    if (idx !== -1) {
+      const before = evidence.slice(0, idx);
+      const match = evidence.slice(idx, idx + candidate.length);
+      const after = evidence.slice(idx + candidate.length);
+      return <>{before}<span className="font-bold text-accent-light not-italic">{match}</span>{after}</>;
+    }
+  }
+  return evidence;
+}
 
 interface LiveSearchTrackerCardProps {
   onNavigate: (page: Page) => void;
@@ -67,6 +114,7 @@ const MAX_EXTRACT_PDFS = 2;
 
 const EMPTY_PREVIEW_STATES: Record<string, PdfPreviewState> = {};
 const EMPTY_SOURCE_PROBE_STATES: Record<string, SourceProbeState> = {};
+const CLAUDE_EXTRACTION_LOG_MARKER = 'Sending to Claude for extraction...';
 
 function softenSignalText(text: string): string {
   return text
@@ -139,6 +187,21 @@ function fileMatchesMetricType(text: string, metricType: string): boolean {
     default:
       return includesAny(text, [metricType.toLowerCase()]);
   }
+}
+
+function isStrictAssetClassMatch(assetClass: string, hints: string[]): boolean {
+  if (hints.length === 0) return true;
+  const normalized = assetClass.toLowerCase();
+
+  return hints.some((hint) => {
+    const h = hint.toLowerCase();
+    if (normalized.includes(h) || h.includes(normalized)) return true;
+    if (h === 'infrastructure' && normalized.includes('infra')) return true;
+    if (h === 'private equity' && (normalized.includes('pe') || normalized.includes('buyout'))) return true;
+    if (h === 'real estate' && (normalized.includes('property') || normalized.includes('reit'))) return true;
+    if (h === 'credit' && (normalized.includes('debt') || normalized.includes('lending') || normalized.includes('fixed income'))) return true;
+    return false;
+  });
 }
 
 function scorePdfLink(
@@ -342,7 +405,13 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
   const effectiveApiKey = apiKey || sessionStorage.getItem('anthropic_key') || import.meta.env.VITE_ANTHROPIC_API_KEY || '';
   const sourceAutoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pdfAutoExtractTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const extractionRunningRef = useRef(false);
+  const extractionLogScrollRef = useRef<HTMLDivElement | null>(null);
+  const [claudeWaitStartedAt, setClaudeWaitStartedAt] = useState<number | null>(null);
+  const [claudeWaitElapsedMs, setClaudeWaitElapsedMs] = useState(0);
   const [showAllPdfs, setShowAllPdfs] = useState(false);
+  const [expandedEvidenceIdx, setExpandedEvidenceIdx] = useState<number | null>(null);
+  const [showAdditionalCompletionRows, setShowAdditionalCompletionRows] = useState(false);
   const [previewStateStore, setPreviewStateStore] = useState<{
     sessionKey: string;
     byUrl: Record<string, PdfPreviewState>;
@@ -370,6 +439,61 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
     () => (sourceProbeStore.sessionKey === sourceProbeSessionKey ? sourceProbeStore.byUrl : EMPTY_SOURCE_PROBE_STATES),
     [sourceProbeSessionKey, sourceProbeStore],
   );
+  const lastExtractionLog = liveTracker?.extractionLogs[liveTracker.extractionLogs.length - 1] ?? null;
+
+  useEffect(() => {
+    if (!liveTracker || liveTracker.status !== 'extracting') {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      const el = extractionLogScrollRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [
+    liveTracker?.status,
+    liveTracker?.extractionLogs.length,
+    liveTracker?.progress.current,
+    liveTracker?.progress.currentFile,
+  ]);
+
+  useEffect(() => {
+    const isWaitingOnClaude = !!lastExtractionLog
+      && liveTracker?.status === 'extracting'
+      && lastExtractionLog.message.includes(CLAUDE_EXTRACTION_LOG_MARKER);
+
+    if (!isWaitingOnClaude) {
+      setClaudeWaitStartedAt(null);
+      setClaudeWaitElapsedMs(0);
+      return;
+    }
+
+    setClaudeWaitStartedAt(Date.now());
+    setClaudeWaitElapsedMs(0);
+  }, [lastExtractionLog?.message, liveTracker?.status]);
+
+  useEffect(() => {
+    if (claudeWaitStartedAt === null) {
+      return;
+    }
+
+    const tick = () => {
+      setClaudeWaitElapsedMs(Date.now() - claudeWaitStartedAt);
+    };
+
+    tick();
+    const intervalId = window.setInterval(tick, 100);
+
+    return () => window.clearInterval(intervalId);
+  }, [claudeWaitStartedAt]);
+
+  useEffect(() => {
+    setExpandedEvidenceIdx(null);
+    setShowAdditionalCompletionRows(false);
+  }, [liveTracker?.id, liveTracker?.status, liveTracker?.foundMetrics.length]);
 
   useEffect(() => {
     // Only depend on liveTrackerId — NOT liveTracker — so intermediate setLiveTracker calls
@@ -776,6 +900,13 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
       return;
     }
 
+    // Prevent re-entry: the auto-retry updates selectedPdfUrls which would
+    // re-trigger this effect. If extraction is already running, bail out.
+    if (extractionRunningRef.current) {
+      return;
+    }
+    extractionRunningRef.current = true;
+
     const tracker = {
       id: liveTrackerId,
       selectedPdfUrls: liveTrackerSelectedPdfUrls,
@@ -1123,6 +1254,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         metrics: allMetrics,
         selectedSource: liveTrackerSelectedSource,
         documentCount: reviewedDocuments.length,
+        assetClassHints: liveTrackerAssetClasses,
       });
       appendExtractionLog(
         assessment
@@ -1162,6 +1294,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         origin: 'live-search',
         title: liveTrackerQuery,
         query: liveTrackerQuery,
+        assetClassHints: liveTrackerAssetClasses,
         metrics: allMetrics,
         signals: allSignals,
         selectedSource: liveTrackerSelectedSource,
@@ -1227,10 +1360,13 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
       });
     }
 
-    void runExtraction();
+    void runExtraction().finally(() => {
+      extractionRunningRef.current = false;
+    });
 
     return () => {
       cancelled = true;
+      extractionRunningRef.current = false;
     };
   }, [
     effectiveApiKey,
@@ -1249,7 +1385,12 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
   ]);
 
   const searchIntents = useMemo(() => detectSearchIntents(liveTracker?.query ?? ''), [liveTracker?.query]);
-  const requestedMetricTypes = useMemo(() => getFocusMetricTargets(liveTracker?.query ?? ''), [liveTracker?.query]);
+  const requestedMetricTypes = useMemo(() => {
+    // Use the metrics the user explicitly selected in the refine step,
+    // falling back to query-text parsing only if none were set
+    if (liveTracker?.metrics?.length) return liveTracker.metrics;
+    return getFocusMetricTargets(liveTracker?.query ?? '');
+  }, [liveTracker?.metrics, liveTracker?.query]);
   const wantsSpecificPerformanceMetrics = useMemo(
     () => requestedMetricTypes.some((metric) => ['IRR', 'TVPI', 'DPI'].includes(metric)),
     [requestedMetricTypes],
@@ -1356,6 +1497,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
             query: liveTracker.query,
             metrics: liveTracker.foundMetrics,
             selectedSource: liveTracker.selectedSource,
+            assetClassHints: liveTracker.assetClasses,
           })
         : null,
     [liveTracker],
@@ -1364,6 +1506,35 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
     && !resultAssessment.isWeakMatch
     && resultAssessment.focusMetricTypes.length > 0
     && resultAssessment.missingFocusMetrics.length > 0;
+  const completionPrimaryMetrics = useMemo(() => {
+    if (!liveTracker) return [];
+    if (!resultAssessment || resultAssessment.matchedFocusMetrics.length === 0) {
+      return liveTracker.foundMetrics;
+    }
+    const strictScopedMatches = liveTracker.foundMetrics.filter((metric) =>
+      metricMatchesRequestedFocus(metric, resultAssessment.focusMetricTypes)
+      && isStrictAssetClassMatch(metric.asset_class, liveTracker.assetClasses),
+    );
+    if (strictScopedMatches.length > 0) {
+      return strictScopedMatches;
+    }
+    const matchedSet = new Set(resultAssessment.matchedFocusMetrics);
+    return liveTracker.foundMetrics.filter((metric) => matchedSet.has(metric));
+  }, [liveTracker, resultAssessment]);
+  const completionSecondaryMetrics = useMemo(() => {
+    if (!liveTracker) return [];
+    if (!resultAssessment || resultAssessment.matchedFocusMetrics.length === 0) {
+      return [];
+    }
+    const primarySet = new Set(completionPrimaryMetrics);
+    return liveTracker.foundMetrics.filter((metric) => !primarySet.has(metric));
+  }, [completionPrimaryMetrics, liveTracker, resultAssessment]);
+  const completionDisplayedMetrics = showAdditionalCompletionRows
+    ? [...completionPrimaryMetrics, ...completionSecondaryMetrics]
+    : completionPrimaryMetrics;
+  const shouldSuggestAlternativeDocuments = !liveTracker
+    ? false
+    : resultAssessment?.isWeakMatch || isPartialMatch || liveTracker.foundMetrics.length === 0;
   const previewCandidatesToFetch = useMemo(
     () =>
       baseRankedPdfLinks
@@ -1848,6 +2019,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
           ? {
               ...current,
               status: 'extracting',
+              attemptedPdfUrls: Array.from(new Set([...current.attemptedPdfUrls, ...current.selectedPdfUrls])),
               message: 'Extracting metrics from reviewed PDFs...',
               extractionLogs: [],
               progress: { current: 0, total: current.selectedPdfUrls.length, currentFile: '' },
@@ -1885,6 +2057,18 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
     && selectedSourceEntry.candidate.url === recommendedSourceEntry.candidate.url;
   const selectedCount = liveTracker.selectedPdfUrls.length;
   const reviewedDocumentPhrase = formatReviewScope(selectedCount);
+  const nextBestPdfCandidate = useMemo(() => {
+    if (!liveTracker) return null;
+
+    const selectedUrls = new Set(liveTracker.selectedPdfUrls);
+    const attemptedUrls = new Set(liveTracker.attemptedPdfUrls);
+    return rankedPdfLinks.find((candidate) => {
+      if (selectedUrls.has(candidate.link.url) || attemptedUrls.has(candidate.link.url)) return false;
+      const preview = pdfPreviewStates[candidate.link.url];
+      if (!preview || preview.status !== 'ready') return true;
+      return !preview.negativeSignals.some((signal) => signal.startsWith('early-rejected:'));
+    }) ?? null;
+  }, [liveTracker, pdfPreviewStates, rankedPdfLinks]);
 
   const togglePdf = (url: string) => {
     cancelAutoExtract();
@@ -1945,6 +2129,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
               : `Scanning ${candidate.label} for PDF links...`,
             pdfLinks: hasCachedPdfList ? probeState.pdfLinks : [],
             selectedPdfUrls: hasCachedPdfList && probeState.bestPdfUrl ? [probeState.bestPdfUrl] : [],
+            attemptedPdfUrls: [],
             errorMessage: '',
           }
         : current,
@@ -1957,9 +2142,41 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         ? {
             ...current,
             status: 'extracting',
+            attemptedPdfUrls: Array.from(new Set([...current.attemptedPdfUrls, ...current.selectedPdfUrls])),
             message: 'Extracting metrics from reviewed PDFs...',
             extractionLogs: [],
             progress: { current: 0, total: current.selectedPdfUrls.length, currentFile: '' },
+            errorMessage: '',
+          }
+        : current,
+    );
+  };
+
+  const tryNextBestPdf = () => {
+    if (!nextBestPdfCandidate) {
+      backToPdfs();
+      return;
+    }
+
+    const nextLink = nextBestPdfCandidate.link;
+    setShowAllPdfs(false);
+    setLiveTracker((current) =>
+      current
+        ? {
+            ...current,
+            status: 'extracting',
+            selectedPdfUrls: [nextLink.url],
+            attemptedPdfUrls: Array.from(new Set([...current.attemptedPdfUrls, nextLink.url])),
+            message: `Trying next-best document: ${nextLink.filename}`,
+            extractionLogs: [
+              {
+                message: `Trying next-best document: ${nextLink.filename}`,
+                status: 'info',
+              },
+            ],
+            progress: { current: 0, total: 1, currentFile: '' },
+            foundMetrics: [],
+            foundSignals: [],
             errorMessage: '',
           }
         : current,
@@ -1978,6 +2195,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
             selectedSource: null,
             pdfLinks: [],
             selectedPdfUrls: [],
+            attemptedPdfUrls: [],
             extractionLogs: [],
             progress: { current: 0, total: 0, currentFile: '' },
             foundMetrics: [],
@@ -1998,6 +2216,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
             message: 'Select a source to scan for documents.',
             pdfLinks: [],
             selectedPdfUrls: [],
+            attemptedPdfUrls: [],
             progress: { current: 0, total: 0, currentFile: '' },
             extractionLogs: [],
             errorMessage: '',
@@ -2014,6 +2233,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
             ...current,
             status: 'selecting_pdfs',
             message: `Found ${current.pdfLinks.length} PDF${current.pdfLinks.length === 1 ? '' : 's'} to review. Nothing is selected yet.`,
+            selectedPdfUrls: [],
             progress: { current: 0, total: 0, currentFile: '' },
             extractionLogs: [],
             errorMessage: '',
@@ -2443,7 +2663,10 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                 />
               </div>
 
-              <div className="max-h-56 space-y-1.5 overflow-y-auto rounded-2xl border border-border/60 bg-bg-primary/70 p-3 font-mono text-xs">
+              <div
+                ref={extractionLogScrollRef}
+                className="max-h-56 space-y-1.5 overflow-y-auto rounded-2xl border border-border/60 bg-bg-primary/70 p-3 font-mono text-xs"
+              >
                 {liveTracker.extractionLogs.length === 0 ? (
                   <p className="text-text-muted">Preparing extraction...</p>
                 ) : (
@@ -2461,7 +2684,16 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                       <span className="shrink-0 mt-px">
                         {entry.status === 'done' ? 'OK' : entry.status === 'error' ? 'X' : '>'}
                       </span>
-                      <span>{entry.message}</span>
+                      <div className="flex min-w-0 flex-1 items-start justify-between gap-3">
+                        <span className="min-w-0 break-words">{entry.message}</span>
+                        {index === liveTracker.extractionLogs.length - 1
+                          && entry.message.includes(CLAUDE_EXTRACTION_LOG_MARKER)
+                          && claudeWaitStartedAt !== null && (
+                            <span className="shrink-0 text-accent-light/90 tabular-nums">
+                              {`${(claudeWaitElapsedMs / 1000).toFixed(1)}s`}
+                            </span>
+                          )}
+                      </div>
                     </div>
                   ))
                 )}
@@ -2475,7 +2707,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
-              className={`rounded-2xl bg-bg-card/80 p-3.5 ${
+              className={`rounded-2xl bg-bg-card/80 ${
                 resultAssessment?.isWeakMatch
                   ? 'border border-yellow/25'
                   : isPartialMatch
@@ -2483,91 +2715,246 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                     : 'border border-green/20'
               }`}
             >
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 mb-2">
-                    {resultAssessment?.isWeakMatch ? (
-                      <AlertTriangle className="w-4 h-4 text-yellow" />
-                    ) : isPartialMatch ? (
-                      <AlertTriangle className="w-4 h-4 text-accent-light" />
-                    ) : (
-                      <CheckCircle className="w-4 h-4 text-green" />
-                    )}
-                    <span className="text-sm font-medium text-text-primary">
-                      {resultAssessment?.isWeakMatch
-                        ? 'Weak match — likely wrong document type'
-                        : isPartialMatch
-                          ? `Found ${new Set(resultAssessment?.matchedFocusMetrics.map((m) => m.metric)).size} of ${resultAssessment?.focusMetricTypes.length ?? '?'} requested metrics`
-                          : requestedMetricTypes.length > 0
-                            ? `All ${requestedMetricTypes.length} requested metrics found`
-                            : 'Extraction complete'}
-                    </span>
-                  </div>
-                  <p className="text-sm text-text-primary">
-                    {requestedMetricTypes.length > 0
-                      ? `${liveTracker.foundMetrics.length} total rows extracted from ${reviewedDocumentPhrase}`
-                      : `Found ${liveTracker.foundMetrics.length} metric${liveTracker.foundMetrics.length === 1 ? '' : 's'} from ${reviewedDocumentPhrase}`}
-                  </p>
-                  {(resultAssessment?.isWeakMatch || isPartialMatch) && (
-                    <>
-                      <p className={`mt-1 text-xs ${resultAssessment?.isWeakMatch ? 'text-yellow' : 'text-accent-light'}`}>
-                        {resultAssessment?.detail}
-                      </p>
-                      {resultAssessment && resultAssessment.missingFocusMetrics.length > 0 && (
-                        <p className="mt-1 text-[11px] text-text-muted">
-                          Missing: {resultAssessment.missingFocusMetrics.join(', ')}
-                        </p>
-                      )}
-                    </>
-                  )}
-                  {selectedSource && (
-                    <div className="flex items-center gap-2 mt-1">
-                      <p className="text-xs text-text-muted">
-                        Source: {selectedSource.pensionFund} - {selectedSource.label}
-                      </p>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                        selectedSource.documentType === 'performance'
-                          ? 'bg-green/15 text-green'
-                          : selectedSource.documentType === 'meeting' || selectedSource.documentType === 'minutes'
-                            ? 'bg-yellow/15 text-yellow'
-                            : selectedSource.documentType === 'financial'
-                              ? 'bg-blue/15 text-blue'
-                              : 'bg-accent/15 text-accent-light'
-                      }`}>
-                        {selectedSource.documentType === 'performance' ? 'Performance Report'
-                          : selectedSource.documentType === 'meeting' ? 'Board Meeting'
-                          : selectedSource.documentType === 'minutes' ? 'Meeting Minutes'
-                          : selectedSource.documentType === 'financial' ? 'Financial Report'
-                          : selectedSource.documentType === 'investment' ? 'Investment Report'
-                          : 'General'}
+              {/* Header */}
+              <div className="px-4 pt-4 pb-3 flex items-center gap-2">
+                {resultAssessment?.isWeakMatch ? (
+                  <AlertTriangle className="w-4 h-4 text-yellow shrink-0" />
+                ) : isPartialMatch ? (
+                  <AlertTriangle className="w-4 h-4 text-accent-light shrink-0" />
+                ) : (
+                  <CheckCircle className="w-4 h-4 text-green shrink-0" />
+                )}
+                <span className="text-sm font-medium text-text-primary">
+                  {resultAssessment?.isWeakMatch
+                    ? 'Weak match — likely wrong document type'
+                    : isPartialMatch
+                      ? `Found ${new Set(resultAssessment?.matchedFocusMetrics.map((m) => m.metric)).size} of ${resultAssessment?.focusMetricTypes.length ?? '?'} requested metrics`
+                      : requestedMetricTypes.length > 0
+                        ? `All ${requestedMetricTypes.length} requested metrics found`
+                        : 'Extraction complete'}
+                </span>
+                <span className="text-[11px] text-text-muted ml-auto shrink-0">
+                  {liveTracker.foundMetrics.length} rows · {reviewedDocumentPhrase}
+                </span>
+              </div>
+
+              {/* Results table — identical to ResultsPage */}
+              {completionDisplayedMetrics.length > 0 && (
+                <div className="mx-3 rounded-lg border border-border/25 overflow-hidden bg-bg-card">
+                  {completionSecondaryMetrics.length > 0 && !showAdditionalCompletionRows && (
+                    <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs border-b border-border/20 bg-bg-primary/25">
+                      <span className="text-text-secondary">
+                        Showing direct matches first
+                      </span>
+                      <span className="text-text-muted/60">
+                        {completionSecondaryMetrics.length} broader row{completionSecondaryMetrics.length === 1 ? '' : 's'} hidden
                       </span>
                     </div>
-                  )} 
-                  <p className="text-[11px] text-text-muted mt-0.5">
-                    {reviewedDocumentPhrase}
-                    {liveTracker.foundMetrics.length > 0 && ` \u00B7 ${liveTracker.foundMetrics.length} rows extracted`}
-                  </p>
-                </div>
-                <div className="flex gap-2 shrink-0">
-                  {liveTracker.pdfLinks.length > 0 && (
-                    <button
-                      onClick={backToPdfs}
-                      className="px-4 py-2 rounded-lg bg-bg-hover border border-border text-sm text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
-                    >
-                      Try Another PDF
-                    </button>
                   )}
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-left">
+                        <th className="px-4 py-2 text-xs font-semibold text-text-muted uppercase tracking-wider">Date</th>
+                        <th className="px-4 py-2 text-xs font-semibold text-text-muted uppercase tracking-wider">Fund</th>
+                        <th className="px-4 py-2 text-xs font-semibold text-text-muted uppercase tracking-wider">GP/Manager</th>
+                        <th className="px-4 py-2 text-xs font-semibold text-text-muted uppercase tracking-wider">Metric</th>
+                        <th className="px-4 py-2 text-xs font-semibold text-text-muted uppercase tracking-wider">Value</th>
+                        <th className="px-4 py-2 text-xs font-semibold text-text-muted uppercase tracking-wider">Asset Class</th>
+                        <th className="px-4 py-2 text-xs font-semibold text-text-muted uppercase tracking-wider">Src</th>
+                        <th className="px-4 py-2 text-xs font-semibold text-text-muted uppercase tracking-wider">Pg</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {completionDisplayedMetrics.slice(0, 12).map((m, i) => {
+                        const isOpen = expandedEvidenceIdx === i;
+                        return (
+                          <React.Fragment key={i}>
+                            <motion.tr
+                              initial={{ opacity: 0, y: 8 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: Math.min(i * 0.03, 0.6) }}
+                              onClick={() => setExpandedEvidenceIdx(isOpen ? null : i)}
+                              className={`border-b border-border/50 cursor-pointer transition-colors ${
+                                isOpen ? 'bg-bg-hover' : 'hover:bg-bg-hover/50'
+                              }`}
+                            >
+                              <td className="px-4 py-3 text-text-muted whitespace-nowrap">{m.date}</td>
+                              <td className="px-4 py-3 text-text-primary max-w-48 truncate">{m.fund}</td>
+                              <td className="px-4 py-3 text-text-secondary whitespace-nowrap">{m.gp}</td>
+                              <td className="px-4 py-3">
+                                <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${TRACKER_METRIC_COLORS[m.metric] || 'bg-bg-hover text-text-secondary'}`}>
+                                  {m.metric}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-text-primary font-mono text-xs whitespace-nowrap">{formatDisplayValue(m.value)}</td>
+                              <td className="px-4 py-3 text-text-secondary text-xs">{m.asset_class}</td>
+                              <td className="px-4 py-3 text-text-muted text-xs max-w-24 truncate">{m.source}</td>
+                              <td className="px-4 py-3 text-text-muted text-xs">{m.page}</td>
+                            </motion.tr>
+                            <AnimatePresence>
+                              {isOpen && (
+                                <motion.tr
+                                  initial={{ opacity: 0, height: 0 }}
+                                  animate={{ opacity: 1, height: 'auto' }}
+                                  exit={{ opacity: 0, height: 0 }}
+                                  transition={{ duration: 0.25 }}
+                                >
+                                  <td colSpan={8} className="px-0 py-0">
+                                    <motion.div
+                                      initial={{ opacity: 0 }}
+                                      animate={{ opacity: 1 }}
+                                      exit={{ opacity: 0 }}
+                                      className="px-6 py-5 bg-bg-tertiary border-b border-border"
+                                    >
+                                      <div className="flex gap-8">
+                                        <div className="space-y-2 min-w-64">
+                                          <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Metadata</h4>
+                                          {[
+                                            ['LP', m.lp],
+                                            ['Fund', m.fund],
+                                            ['GP/Manager', m.gp],
+                                            ['Strategy', m.asset_class],
+                                            ['Currency', m.value.startsWith('\u20AC') ? 'EUR' : 'USD'],
+                                            ['Page', String(m.page)],
+                                            ['Confidence', m.confidence],
+                                          ].map(([label, val]) => (
+                                            <div key={label} className="flex text-sm">
+                                              <span className="text-text-muted w-24 shrink-0">{label}</span>
+                                              <span className="text-text-primary">{val}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                        <div className="flex-1">
+                                          <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Source Evidence</h4>
+                                          {m.evidence && (
+                                            <>
+                                              <blockquote className="border-l-2 border-accent/40 pl-4 py-2 bg-bg-card rounded-r-lg">
+                                                <p className="text-sm text-text-secondary leading-relaxed italic">
+                                                  "{trackerHighlightEvidence(m.evidence, m.value)}"
+                                                </p>
+                                              </blockquote>
+                                              <p className="text-xs text-text-muted mt-2 flex items-center gap-1.5">
+                                                <FileText className="w-3 h-3" />
+                                                {m.source} — Page {m.page}
+                                              </p>
+                                            </>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </motion.div>
+                                  </td>
+                                </motion.tr>
+                              )}
+                            </AnimatePresence>
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {completionSecondaryMetrics.length > 0 && (
+                    <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs border-t border-border/20 bg-bg-primary/25">
+                      <span className="text-text-muted/60">
+                        {showAdditionalCompletionRows
+                          ? `Showing ${completionSecondaryMetrics.length} broader row${completionSecondaryMetrics.length === 1 ? '' : 's'} as extra context.`
+                          : `${completionSecondaryMetrics.length} broader row${completionSecondaryMetrics.length === 1 ? '' : 's'} also appeared in this report.`}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setShowAdditionalCompletionRows((current) => !current);
+                          setExpandedEvidenceIdx(null);
+                        }}
+                        className="text-[11px] font-medium text-accent-light hover:text-white transition-colors cursor-pointer"
+                      >
+                        {showAdditionalCompletionRows ? 'Hide broader rows' : 'Show broader rows'}
+                      </button>
+                    </div>
+                  )}
+                  {completionDisplayedMetrics.length > 12 && (
+                    <div className="px-4 py-2 text-xs text-text-muted/40 border-t border-border/20 text-center">
+                      + {completionDisplayedMetrics.length - 12} more rows in full results
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Missing + source + actions */}
+              <div className="px-4 pt-3 pb-4">
+                {/* Missing metrics */}
+                {resultAssessment && resultAssessment.missingFocusMetrics.length > 0 && (
+                  <div className="mb-3">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/25 bg-amber-400/10 px-2.5 py-1 text-[11px] font-semibold text-amber-300">
+                      <AlertTriangle className="w-3 h-3" />
+                      Missing: {resultAssessment.missingFocusMetrics.join(', ')}
+                    </span>
+                  </div>
+                )}
+                {resultAssessment?.isWeakMatch && (
+                  <p className="mb-2 text-xs text-yellow">{resultAssessment.detail}</p>
+                )}
+
+                {/* Source line */}
+                {selectedSource && (
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-[11px] text-text-muted/40">
+                      {selectedSource.pensionFund} – {selectedSource.label}
+                    </span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                      selectedSource.documentType === 'performance' ? 'bg-green/15 text-green'
+                        : selectedSource.documentType === 'meeting' || selectedSource.documentType === 'minutes' ? 'bg-yellow/15 text-yellow'
+                        : selectedSource.documentType === 'financial' ? 'bg-blue/15 text-blue'
+                        : 'bg-accent/15 text-accent-light'
+                    }`}>
+                      {selectedSource.documentType === 'performance' ? 'Performance Report'
+                        : selectedSource.documentType === 'meeting' ? 'Board Meeting'
+                        : selectedSource.documentType === 'minutes' ? 'Meeting Minutes'
+                        : selectedSource.documentType === 'financial' ? 'Financial Report'
+                        : selectedSource.documentType === 'investment' ? 'Investment Report'
+                        : 'General'}
+                    </span>
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex items-center justify-between pt-3 border-t border-border/15">
+                  <div className="flex flex-wrap gap-2">
+                    {shouldSuggestAlternativeDocuments && liveTracker.pdfLinks.length > 0 && nextBestPdfCandidate && (
+                      <button
+                        onClick={tryNextBestPdf}
+                        className="rounded-lg border border-accent/25 bg-accent/10 px-3 py-1.5 text-[11px] font-medium text-accent-light hover:bg-accent/15 hover:text-white transition-colors cursor-pointer"
+                      >
+                        Try next-best document
+                      </button>
+                    )}
+                    {shouldSuggestAlternativeDocuments && liveTracker.sourceCandidates.length > 1 && (
+                      <button
+                        onClick={backToSources}
+                        className="rounded-lg border border-border/50 bg-bg-hover/35 px-3 py-1.5 text-[11px] text-text-secondary hover:text-text-primary hover:border-border transition-colors cursor-pointer"
+                      >
+                        Try another source
+                      </button>
+                    )}
+                    {shouldSuggestAlternativeDocuments && liveTracker.pdfLinks.length > 0 && (
+                      <button
+                        onClick={backToPdfs}
+                        className="rounded-lg border border-border/50 bg-bg-hover/35 px-3 py-1.5 text-[11px] text-text-muted hover:text-text-secondary hover:border-border transition-colors cursor-pointer"
+                      >
+                        Review PDF list
+                      </button>
+                    )}
+                    {shouldSuggestAlternativeDocuments && (
+                      <button
+                        onClick={retryDiscovery}
+                        className="rounded-lg border border-transparent px-3 py-1.5 text-[11px] text-text-muted/60 hover:text-text-secondary transition-colors cursor-pointer"
+                      >
+                        Search again
+                      </button>
+                    )}
+                  </div>
                   <button
                     onClick={() => onNavigate('results')}
-                    className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-light transition-colors cursor-pointer"
+                    className="px-5 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-light transition-colors cursor-pointer"
                   >
                     {resultAssessment?.isWeakMatch || isPartialMatch ? 'Review Results' : 'View Results'}
-                  </button>
-                  <button
-                    onClick={retryDiscovery}
-                    className="px-4 py-2 rounded-lg bg-bg-hover border border-border text-sm text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
-                  >
-                    Search Again
                   </button>
                 </div>
               </div>
@@ -2585,15 +2972,31 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
               <div className="flex items-start gap-3">
                 <AlertTriangle className="w-5 h-5 text-red shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-text-primary">Something blocked the live tracker</p>
+                  <p className="text-sm font-medium text-text-primary">
+                    {liveTracker.foundMetrics.length === 0 && liveTracker.errorMessage?.includes('No metrics')
+                      ? 'No metrics found in reviewed documents'
+                      : 'Something blocked the live tracker'}
+                  </p>
                   <p className="text-sm text-text-secondary mt-1">{liveTracker.errorMessage}</p>
+                  {nextBestPdfCandidate && (
+                    <p className="text-xs text-text-muted mt-2">
+                      Next most likely file: <span className="text-text-secondary">{nextBestPdfCandidate.link.filename}</span>
+                    </p>
+                  )}
                   <div className="flex flex-wrap gap-2 mt-4">
-                    {liveTracker.pdfLinks.length > 0 ? (
+                    {liveTracker.pdfLinks.length > 0 && nextBestPdfCandidate ? (
+                      <button
+                        onClick={tryNextBestPdf}
+                        className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-light transition-colors cursor-pointer"
+                      >
+                        Try next-best document
+                      </button>
+                    ) : liveTracker.pdfLinks.length > 0 ? (
                       <button
                         onClick={backToPdfs}
                         className="px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-light transition-colors cursor-pointer"
                       >
-                        Back to PDFs
+                        Review PDF list
                       </button>
                     ) : (
                       <button
@@ -2603,12 +3006,20 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                         Try Again
                       </button>
                     )}
-                    {liveTracker.sourceCandidates.length > 0 && liveTracker.pdfLinks.length === 0 && (
+                    {liveTracker.sourceCandidates.length > 1 && (
                       <button
                         onClick={backToSources}
                         className="px-4 py-2 rounded-lg bg-bg-hover border border-border text-sm text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
                       >
-                        Choose Another Source
+                        Try another source
+                      </button>
+                    )}
+                    {liveTracker.pdfLinks.length > 0 && nextBestPdfCandidate && (
+                      <button
+                        onClick={backToPdfs}
+                        className="px-4 py-2 rounded-lg bg-bg-hover border border-border text-sm text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
+                      >
+                        Choose manually
                       </button>
                     )}
                   </div>

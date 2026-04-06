@@ -140,6 +140,7 @@ export interface LiveSearchTracker {
   selectedSource: SourceSearchCandidate | null;
   pdfLinks: PdfLink[];
   selectedPdfUrls: string[];
+  attemptedPdfUrls: string[];
   extractionLogs: LiveTrackerLog[];
   progress: LiveTrackerProgress;
   foundMetrics: Metric[];
@@ -167,6 +168,7 @@ export interface ActiveResults {
   origin: ResultsOrigin;
   title: string;
   query: string;
+  assetClassHints?: string[];
   metrics: Metric[];
   signals: Signal[];
   selectedSource: SourceSearchCandidate | null;
@@ -199,7 +201,7 @@ export interface ReviewedDocument {
   elapsedSec?: number;
 }
 
-export type Page = 'search' | 'results' | 'dashboard' | 'trackers' | 'upload' | 'eval';
+export type Page = 'search' | 'results' | 'monitor' | 'trackers' | 'upload' | 'eval';
 
 export type MetricFilter = string;
 export type AssetClassFilter = string;
