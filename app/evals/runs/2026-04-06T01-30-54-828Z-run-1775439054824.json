@@ -1,0 +1,59 @@
+{
+  "id": "run-1775439054824",
+  "timestamp": "2026-04-06T01:30:54.824Z",
+  "query": "https://msbi.us/annual-reports",
+  "fund": "Minnesota SBI",
+  "selected_source": {
+    "label": "Comprehensive Performance Report",
+    "document_type": "performance",
+    "url": "https://msbi.us/comprehensive-performance-report"
+  },
+  "selected_pdf": {
+    "filename": "msbi_comprehensive_performance_report_december_31_2025.pdf",
+    "source_label": "",
+    "preview_score": null
+  },
+  "retry_pdf": null,
+  "reviewed_pages": [],
+  "total_pages": 0,
+  "metrics": [
+    {
+      "metric": "NAV",
+      "asset_class": "Private Equity",
+      "value": "16,074,528,765",
+      "page": 81,
+      "evidence": "Private Equity ... Market Value 16,074,528,765",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Equity",
+      "value": "13.3",
+      "page": 81,
+      "evidence": "Private Equity IRR 13.3",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Credit",
+      "value": "1,816,577,145",
+      "page": 88,
+      "evidence": "Private Credit ... Market Value 1,816,577,145",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Credit",
+      "value": "9.7",
+      "page": 88,
+      "evidence": "Private Credit IRR 9.7",
+      "confidence": "high"
+    }
+  ],
+  "coverage_score": 1,
+  "completeness_label": "complete",
+  "proxy_hits": [],
+  "cost_usd": 0,
+  "elapsed_sec": 0,
+  "documents_used": 1
+}

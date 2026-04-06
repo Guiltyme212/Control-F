@@ -149,12 +149,15 @@ export interface LiveSearchTracker {
   createdAt: string;
 }
 
+export type AlertMode = 'new-reports-or-values' | 'new-values-only' | 'new-documents-only';
+
 export interface LiveSearchTrackerSeed {
   query: string;
   pensionFunds: string[];
   metrics: string[];
   assetClasses: string[];
   frequency: string;
+  alertMode: AlertMode;
 }
 
 export type ResultsOrigin = 'live-search' | 'upload-file' | 'upload-scrape';
@@ -172,7 +175,7 @@ export interface ActiveResults {
   createdAt: string;
 }
 
-export type Page = 'search' | 'results' | 'dashboard' | 'trackers' | 'upload';
+export type Page = 'search' | 'results' | 'dashboard' | 'trackers' | 'upload' | 'eval';
 
 export type MetricFilter = string;
 export type AssetClassFilter = string;

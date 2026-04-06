@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { deduplicateMetrics, detectSearchIntents, extractMetricsFromPdfUrl, discoverSourceCandidates, fetchPdfPreviewSubset, scrapeUrlForPdfs, selectBestPdfWithLLM, saveRunArtifact } from '../utils/api';
 import type { PdfCandidate } from '../utils/api';
-import { extractPdfPreviewText, scorePreviewText, scoreFreshness } from '../utils/pdfFilter';
+import { extractPdfPreviewText, scorePreviewText, scoreFreshness, earlyRejectCheck } from '../utils/pdfFilter';
 import { assessLiveResult, computeCoverageScore, shouldAutoRetry } from '../utils/liveResultAssessment';
 import { useAppContext } from '../context/AppContext';
 import type { Metric, Page, PdfLink, PdfScorecard, SearchIntent, Signal, SourceSearchCandidate } from '../data/types';
@@ -471,6 +471,21 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
             try {
               const subset = await fetchPdfPreviewSubset(pdf.url, [1, 2, 3]);
               const preview = await extractPdfPreviewText(subset, 3);
+
+              // Early reject: catch corporate financials / wrong-entity docs before scoring
+              const rejectCheck = earlyRejectCheck(preview.text, trackerQuery);
+              if (rejectCheck.shouldReject) {
+                addLog(`Rejected: ${pdf.filename} — ${rejectCheck.reason}`, 'info');
+                return {
+                  pdf: { ...pdf, previewScore: -100, previewMatchedMetrics: [], previewNegativeSignals: ['early-rejected'] } as PdfCandidate,
+                  filenameScore: fnScore,
+                  combinedScore: -100,
+                  previewScore: -100,
+                  matchedMetrics: [] as string[],
+                  negativeSignals: ['early-rejected: ' + rejectCheck.reason],
+                };
+              }
+
               const pScore = scorePreviewText(preview.text, autoFocusKws, autoFocusMetrics);
               return {
                 pdf: {
@@ -1175,6 +1190,12 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
               const previewText = await extractPdfPreviewText(subsetBytes, 5);
               if (cancelled) return;
 
+              // Early reject: skip corporate/off-target docs
+              const rejectCheck = earlyRejectCheck(previewText.text, liveTrackerQuery);
+              if (rejectCheck.shouldReject) {
+                continue;
+              }
+
               const previewScore = scorePreviewText(previewText.text, previewKeywords, requestedMetricTypes);
               const combinedScore = pdfCandidate.score + previewScore.score;
 
@@ -1393,6 +1414,28 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
 
             const previewText = await extractPdfPreviewText(subsetBytes, 5);
             if (cancelled) return;
+
+            // Early reject: flag corporate/off-target docs
+            const rejectCheck = earlyRejectCheck(previewText.text, liveTrackerQuery);
+            if (rejectCheck.shouldReject) {
+              setPreviewStateStore((current) => ({
+                sessionKey: previewSessionKey,
+                byUrl: {
+                  ...(current.sessionKey === previewSessionKey ? current.byUrl : {}),
+                  [candidate.link.url]: {
+                    status: 'ready',
+                    score: -100,
+                    matchedKeywords: [],
+                    matchedMetricTypes: [],
+                    negativeSignals: ['early-rejected: ' + rejectCheck.reason],
+                    excerpt: rejectCheck.corporateSignals.slice(0, 3).join(', '),
+                    numericSignalCount: 0,
+                    pagesScanned: previewText.pagesScanned,
+                  },
+                },
+              }));
+              return;
+            }
 
             const previewScore = scorePreviewText(previewText.text, previewKeywords, requestedMetricTypes);
             setPreviewStateStore((current) => ({

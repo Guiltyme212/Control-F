@@ -1,0 +1,612 @@
+{
+  "timestamp": "2026-04-06T01:35:10.316Z",
+  "casesRun": 5,
+  "passed": 5,
+  "partial": 0,
+  "failed": 0,
+  "totalCost": 0.395796,
+  "results": [
+    {
+      "caseId": "G1",
+      "caseName": "NY State CRF — T. Rowe Price termination",
+      "grade": "PASS",
+      "found": 1,
+      "total": 1,
+      "metricMatches": [
+        {
+          "expected": {
+            "metricType": "Termination",
+            "gp": "T. Rowe Price",
+            "value": "2",
+            "valueIsPattern": true
+          },
+          "found": true,
+          "matchedValue": "~$2 billion",
+          "matchedType": "Termination",
+          "matchedAsset": "Public Equities"
+        }
+      ],
+      "forbiddenFound": [],
+      "metrics": [
+        {
+          "metric": "Termination",
+          "value": "~$2 billion",
+          "asset_class": "Public Equities",
+          "fund": "T. Rowe Price Public Equities Account",
+          "gp": "T. Rowe Price",
+          "evidence": "T. Rowe Price, a global manager within the CRF public equities portfolio, was terminated",
+          "confidence": "high",
+          "page": 1
+        },
+        {
+          "metric": "NAV",
+          "value": "~$2,000,000,000",
+          "asset_class": "Public Equities",
+          "fund": "T. Rowe Price Public Equities Account",
+          "gp": "T. Rowe Price",
+          "evidence": "The account value at the time of termination was approximately $2 billion",
+          "confidence": "high",
+          "page": 1
+        },
+        {
+          "metric": "Commitment",
+          "value": "$13.42 million",
+          "asset_class": "Private Equity",
+          "fund": "CVC Capital Partners Globetrotter SCSp",
+          "gp": "CVC Capital Partners",
+          "evidence": "CVC Capital Partners Globetrotter SCSp – CVC Capital Partners – $13.42 million (funded from rollover capital)",
+          "confidence": "high",
+          "page": 1
+        },
+        {
+          "metric": "Commitment",
+          "value": "$200 million",
+          "asset_class": "Credit",
+          "fund": "Kreos Capital VIII",
+          "gp": "BlackRock, Inc.",
+          "evidence": "Kreos Capital VIII – BlackRock, Inc. – $200 million",
+          "confidence": "high",
+          "page": 2
+        },
+        {
+          "metric": "Commitment",
+          "value": "$243,545,000",
+          "asset_class": "Real Assets",
+          "fund": "Stonepeak Global Renewables Fund II, L.P.",
+          "gp": "Stonepeak Partners L.P.",
+          "evidence": "Stonepeak Global Renewables Fund II, L.P. – Stonepeak Partners L.P. – $243,545,000",
+          "confidence": "high",
+          "page": 3
+        },
+        {
+          "metric": "Co-Investment",
+          "value": "$80 million",
+          "asset_class": "Real Assets",
+          "fund": "Stonepeak Global Renewables Fund II Co-Investment",
+          "gp": "Stonepeak Partners L.P.",
+          "evidence": "Stonepeak Global Renewables Fund II Co-Investment – Stonepeak Partners L.P. – $80 million",
+          "confidence": "high",
+          "page": 3
+        },
+        {
+          "metric": "Commitment",
+          "value": "€250 million",
+          "asset_class": "Real Assets",
+          "fund": "DIF Infrastructure VIII",
+          "gp": "CVC DIF Management",
+          "evidence": "DIF Infrastructure VIII – CVC DIF Management – €250 million",
+          "confidence": "high",
+          "page": 3
+        },
+        {
+          "metric": "Commitment",
+          "value": "€250 million",
+          "asset_class": "Real Assets",
+          "fund": "DIF Value-Add IV",
+          "gp": "CVC DIF Management",
+          "evidence": "DIF Value-Add IV – CVC DIF Management – €250 million",
+          "confidence": "high",
+          "page": 3
+        },
+        {
+          "metric": "Commitment",
+          "value": "No activity",
+          "asset_class": "Fixed Income",
+          "fund": "Fixed Income External Managers",
+          "gp": "N/A",
+          "evidence": "no external manager activity in the CRF's fixed income portfolio for November 2025",
+          "confidence": "high",
+          "page": 2
+        },
+        {
+          "metric": "Commitment",
+          "value": "No activity",
+          "asset_class": "Real Estate",
+          "fund": "Real Estate Portfolio",
+          "gp": "N/A",
+          "evidence": "no activity in the CRF's real estate portfolio for November 2025",
+          "confidence": "high",
+          "page": 2
+        },
+        {
+          "metric": "Commitment",
+          "value": "No activity",
+          "asset_class": "Opportunistic / Absolute Return",
+          "fund": "Opportunistic Absolute Return Strategies Portfolio",
+          "gp": "N/A",
+          "evidence": "no activity in the CRF's opportunistic and absolute return strategies portfolio for November 2025",
+          "confidence": "high",
+          "page": 2
+        },
+        {
+          "metric": "Commitment",
+          "value": "No activity",
+          "asset_class": "Multi-Asset / Emerging Managers",
+          "fund": "Emerging Manager Program",
+          "gp": "N/A",
+          "evidence": "no activity in the CRF's emerging manager portfolio for November 2025",
+          "confidence": "high",
+          "page": 3
+        }
+      ],
+      "signals": [
+        {
+          "signal_type": "Manager Termination",
+          "description": "T. Rowe Price terminated as a global public equities manager on November 4, 2025; account value ~$2 billion reallocated to cash."
+        },
+        {
+          "signal_type": "Rollover Capital",
+          "description": "CVC Capital Partners Globetrotter SCSp funded from rollover capital out of CVC Asia Pacific Fund IV, L.P., not a new capital deployment."
+        },
+        {
+          "signal_type": "Co-Investment Alongside Main Fund",
+          "description": "Stonepeak Global Renewables Fund II Co-Investment ($80M) invests alongside Stonepeak Global Renewables Fund II, L.P. ($243.545M) — same GP, same close date."
+        },
+        {
+          "signal_type": "Dual Currency Commitment",
+          "description": "DIF Infrastructure VIII and DIF Value-Add IV both committed in EUR (€250M each), both managed by CVC DIF Management, both closed November 18, 2025."
+        },
+        {
+          "signal_type": "Existing Relationship",
+          "description": "All active managers (CVC Capital Partners, BlackRock, Stonepeak Partners, CVC DIF Management) are noted as existing relationships with the CRF."
+        }
+      ],
+      "metadata": {
+        "source_organization": "New York State Common Retirement Fund (CRF)",
+        "document_type": "Monthly Transaction Report",
+        "document_date": "2025-11-30",
+        "reporting_period": "November 2025"
+      },
+      "costUsd": 0.057474,
+      "inputTokens": 6883,
+      "outputTokens": 2455,
+      "elapsedSec": 30.194,
+      "truncated": false
+    },
+    {
+      "caseId": "G5",
+      "caseName": "Santa Barbara PRR — one-year IRR",
+      "grade": "PASS",
+      "found": 1,
+      "total": 1,
+      "metricMatches": [
+        {
+          "expected": {
+            "metricType": "IRR",
+            "value": "8.40",
+            "valueIsPattern": true
+          },
+          "found": true,
+          "matchedValue": "8.40%",
+          "matchedType": "IRR",
+          "matchedAsset": "Private Real Return"
+        }
+      ],
+      "forbiddenFound": [],
+      "metrics": [
+        {
+          "metric": "IRR",
+          "value": "8.40%",
+          "asset_class": "Private Real Return",
+          "fund": "PRR Portfolio (Total)",
+          "gp": "Hamilton Lane",
+          "evidence": "One-year net IRR of 8.40% outperformed designated benchmark by 173 bps",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "IRR",
+          "value": "8.40%",
+          "asset_class": "Private Real Return",
+          "fund": "PRR Portfolio (Total)",
+          "gp": "Hamilton Lane",
+          "evidence": "One-year IRR of 8.40% (Year Ended 6/30/2025 Point-to-Point IRR)",
+          "confidence": "high",
+          "page": 5
+        },
+        {
+          "metric": "IRR",
+          "value": "6.67%",
+          "asset_class": "Private Real Return",
+          "fund": "PRR Portfolio (Total) — Benchmark",
+          "gp": "N/A",
+          "evidence": "1-Year IRR: CPI-U + 400 bps = 6.67%",
+          "confidence": "high",
+          "page": 6
+        },
+        {
+          "metric": "IRR",
+          "value": "11.80%",
+          "asset_class": "Private Real Return",
+          "fund": "PRR Portfolio (Total) — Peer Benchmark",
+          "gp": "Hamilton Lane",
+          "evidence": "1-Year IRR: HL Natural Resources and Infrastructure = 11.80%",
+          "confidence": "high",
+          "page": 6
+        }
+      ],
+      "signals": [
+        {
+          "signal_type": "Benchmark Outperformance",
+          "description": "SBCERS PRR 1-year IRR of 8.40% outperformed CPI-U+400bps (6.67%) by 173 bps but underperformed HL NR&I peer benchmark (11.80%) by 340 bps as of June 30, 2025"
+        },
+        {
+          "signal_type": "Since Inception Context",
+          "description": "Since inception IRR of 11.36% outperforms CPI-U+400bps (6.76%) by 460 bps and HL NR&I (6.49%) by 487 bps, providing context for 1-year relative performance"
+        }
+      ],
+      "metadata": {
+        "source_organization": "Santa Barbara County Employees' Retirement System (SBCERS)",
+        "document_type": "Performance Report",
+        "document_date": "2025-06-30",
+        "reporting_period": "Q2 2025 (Second Quarter 2025)"
+      },
+      "costUsd": 0.161592,
+      "inputTokens": 48904,
+      "outputTokens": 992,
+      "elapsedSec": 17.51,
+      "truncated": false
+    },
+    {
+      "caseId": "G9",
+      "caseName": "NJ State — Ardian target return + fund size",
+      "grade": "PASS",
+      "found": 2,
+      "total": 2,
+      "metricMatches": [
+        {
+          "expected": {
+            "metricType": "Target Return",
+            "value": "12.*14",
+            "valueIsPattern": true
+          },
+          "found": true,
+          "matchedValue": "12-14% Net IRR",
+          "matchedType": "Target Return",
+          "matchedAsset": "Real Assets"
+        },
+        {
+          "expected": {
+            "metricType": "Target Fund Size",
+            "value": "7.5",
+            "valueIsPattern": true
+          },
+          "found": true,
+          "matchedValue": "$7.5 billion",
+          "matchedType": "Target Fund Size",
+          "matchedAsset": "Real Assets"
+        }
+      ],
+      "forbiddenFound": [],
+      "metrics": [
+        {
+          "metric": "Target Return",
+          "value": "12-14% Net IRR",
+          "asset_class": "Real Assets",
+          "fund": "Ardian Secondary Fund (ASF) IX Infrastructure B, L.P.",
+          "gp": "Ardian",
+          "evidence": "Target Returns: 12-14% Net IRR",
+          "confidence": "high",
+          "page": 3
+        },
+        {
+          "metric": "Target Fund Size",
+          "value": "$7.5 billion",
+          "asset_class": "Real Assets",
+          "fund": "Ardian Secondary Fund (ASF) IX Infrastructure B, L.P.",
+          "gp": "Ardian",
+          "evidence": "Target Fund Size: $7.5 billion",
+          "confidence": "high",
+          "page": 3
+        },
+        {
+          "metric": "Commitment",
+          "value": "$150 million",
+          "asset_class": "Real Assets",
+          "fund": "Ardian Secondary Fund (ASF) IX Infrastructure B, L.P.",
+          "gp": "Ardian",
+          "evidence": "proposing an investment of up to $150 million in ASF IX Infrastructure B, L.P.",
+          "confidence": "high",
+          "page": 1
+        },
+        {
+          "metric": "Co-Investment",
+          "value": "$150 million",
+          "asset_class": "Real Assets",
+          "fund": "ASF IX Infrastructure Co-Investment Sidecar Vehicle",
+          "gp": "Ardian",
+          "evidence": "up to $150 million to a co-investment sidecar vehicle alongside the Fund",
+          "confidence": "high",
+          "page": 1
+        },
+        {
+          "metric": "IRR",
+          "value": "~12% net IRR (aggregate since inception across infrastructure secondary funds)",
+          "asset_class": "Real Assets",
+          "fund": "Ardian Secondary Fund (ASF) IX Infrastructure B, L.P.",
+          "gp": "Ardian",
+          "evidence": "achieving an aggregate net IRR of approximately 12% since inception",
+          "confidence": "high",
+          "page": 1
+        },
+        {
+          "metric": "IRR",
+          "value": "16.7% net IRR",
+          "asset_class": "Real Assets",
+          "fund": "ASF VI Infrastructure",
+          "gp": "Ardian",
+          "evidence": "ASF VI Infrastructure 2014 Secondaries 16.7% net IRR; *Net as of 6/30/2025",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "TVPI",
+          "value": "1.6x Net TVPI",
+          "asset_class": "Real Assets",
+          "fund": "ASF VI Infrastructure",
+          "gp": "Ardian",
+          "evidence": "ASF VI Infrastructure 2014 Secondaries 16.7% net IRR; 1.6x Net TVPI; *Net as of 6/30/2025",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "DPI",
+          "value": "1.3x Net DPI",
+          "asset_class": "Real Assets",
+          "fund": "ASF VI Infrastructure",
+          "gp": "Ardian",
+          "evidence": "ASF VI Infrastructure 2014 Secondaries 1.3x Net DPI; *Net as of 6/30/2025",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "IRR",
+          "value": "11.5% net IRR",
+          "asset_class": "Real Assets",
+          "fund": "ASF VII Infrastructure",
+          "gp": "Ardian",
+          "evidence": "ASF VII Infrastructure 2017 Secondaries 11.5% net IRR; *Net as of 6/30/2025",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "TVPI",
+          "value": "1.6x Net TVPI",
+          "asset_class": "Real Assets",
+          "fund": "ASF VII Infrastructure",
+          "gp": "Ardian",
+          "evidence": "ASF VII Infrastructure 2017 Secondaries 1.6x Net TVPI; *Net as of 6/30/2025",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "DPI",
+          "value": "0.9x Net DPI",
+          "asset_class": "Real Assets",
+          "fund": "ASF VII Infrastructure",
+          "gp": "Ardian",
+          "evidence": "ASF VII Infrastructure 2017 Secondaries 0.9x Net DPI; *Net as of 6/30/2025",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "IRR",
+          "value": "10.7% net IRR",
+          "asset_class": "Real Assets",
+          "fund": "ASF VIII Infrastructure",
+          "gp": "Ardian",
+          "evidence": "ASF VIII Infrastructure 2021 Secondaries 10.7% net IRR; *Net as of 6/30/2025",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "TVPI",
+          "value": "1.1x Net TVPI",
+          "asset_class": "Real Assets",
+          "fund": "ASF VIII Infrastructure",
+          "gp": "Ardian",
+          "evidence": "ASF VIII Infrastructure 2021 Secondaries 1.1x Net TVPI; *Net as of 6/30/2025",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "DPI",
+          "value": "0.1x Net DPI",
+          "asset_class": "Real Assets",
+          "fund": "ASF VIII Infrastructure",
+          "gp": "Ardian",
+          "evidence": "ASF VIII Infrastructure 2021 Secondaries 0.1x Net DPI; *Net as of 6/30/2025",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "Management Fee",
+          "value": "1% on commitments during investment period; 0.675% on lower of NAV or acquisition cost post investment period",
+          "asset_class": "Real Assets",
+          "fund": "Ardian Secondary Fund (ASF) IX Infrastructure B, L.P.",
+          "gp": "Ardian",
+          "evidence": "1% on commitments during the investment period; 0.675% on lower of NAV or acquisition cost",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "Carry",
+          "value": "12.5% Carry with a 7% hurdle",
+          "asset_class": "Real Assets",
+          "fund": "Ardian Secondary Fund (ASF) IX Infrastructure B, L.P.",
+          "gp": "Ardian",
+          "evidence": "Incentive Fee: 12.5% Carry with a 7% hurdle",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "Management Fee",
+          "value": "0.00%",
+          "asset_class": "Real Assets",
+          "fund": "ASF IX Infrastructure Co-Investment Sidecar Vehicle",
+          "gp": "Ardian",
+          "evidence": "Co-Investment Side Car Management Fee: 0.00%",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "Carry",
+          "value": "0.00%",
+          "asset_class": "Real Assets",
+          "fund": "ASF IX Infrastructure Co-Investment Sidecar Vehicle",
+          "gp": "Ardian",
+          "evidence": "Co-Investment Side Car Incentive Fee: 0.00%",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "Target Fund Size",
+          "value": "$151.5 million",
+          "asset_class": "Real Assets",
+          "fund": "ASF IX Infrastructure Co-Investment Sidecar Vehicle",
+          "gp": "Ardian",
+          "evidence": "Co-Investment Side Car Fund Size: $151.5 million",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "AUM",
+          "value": "$192 Billion",
+          "asset_class": "Multi-Asset",
+          "fund": "Ardian (Firm-wide)",
+          "gp": "Ardian",
+          "evidence": "Total Firm Assets: $192 Billion",
+          "confidence": "high",
+          "page": 4
+        },
+        {
+          "metric": "AUM",
+          "value": "approximately $100 billion",
+          "asset_class": "Real Assets",
+          "fund": "Ardian Fund of Funds Platform",
+          "gp": "Ardian",
+          "evidence": "Ardian Fund of Funds platform manages approximately $100 billion",
+          "confidence": "high",
+          "page": 1
+        }
+      ],
+      "signals": [
+        {
+          "signal_type": "Performance Data Source",
+          "description": "All prior fund performance metrics (IRR, TVPI, DPI) sourced from Aksia LLC as of 6/30/2025"
+        },
+        {
+          "signal_type": "Proposed Investment",
+          "description": "Total proposed commitment of $300M ($150M fund + $150M co-invest) is subject to SIC approval at January 28, 2026 meeting"
+        },
+        {
+          "signal_type": "Target Return vs. Track Record",
+          "description": "Target Net IRR of 12-14% aligns with aggregate ~12% net IRR delivered across prior infrastructure secondary funds"
+        },
+        {
+          "signal_type": "IPC Meeting Date",
+          "description": "IPC meeting held January 15, 2026; SIC presentation scheduled January 28, 2026"
+        },
+        {
+          "signal_type": "GP Commitment",
+          "description": "Ardian commits 1.0% of fund capital, indicating GP alignment"
+        },
+        {
+          "signal_type": "Fee Offset",
+          "description": "100% management fee offset on advisory, broken deal, capital markets, directors', monitoring and transaction/deal fees for main fund"
+        }
+      ],
+      "metadata": {
+        "source_organization": "State of New Jersey Division of Investment",
+        "document_type": "Investment Policy Committee Report / Investment Memorandum",
+        "document_date": "2026-01-22",
+        "reporting_period": "January 28, 2026 State Investment Council Meeting"
+      },
+      "costUsd": 0.088911,
+      "inputTokens": 9442,
+      "outputTokens": 4039,
+      "elapsedSec": 46.539,
+      "truncated": false
+    },
+    {
+      "caseId": "N2",
+      "caseName": "DCRB — noisy board minutes (should flag weak)",
+      "grade": "PASS",
+      "found": 0,
+      "total": 0,
+      "metricMatches": [],
+      "forbiddenFound": [],
+      "metrics": [
+        {
+          "metric": "IRR",
+          "value": "No activity",
+          "asset_class": "Private Markets",
+          "fund": "DCRB Total Fund",
+          "gp": "",
+          "evidence": "No IRR/TVPI/DPI metrics reported in Jan 29 2026 board minutes",
+          "confidence": "high",
+          "page": 5
+        }
+      ],
+      "signals": [
+        {
+          "signal_type": "Missing Data",
+          "description": "The January 29, 2026 open board meeting minutes contain no IRR, TVPI, or DPI metrics for private markets or any sub-strategy. Performance data referenced is limited to total fund net returns (calendar year, fiscal year, and 20-year average). Detailed private markets performance metrics would be found in the Investment Committee presentation materials referenced as presented earlier that morning, not included in these minutes."
+        },
+        {
+          "signal_type": "Related Document Reference",
+          "description": "Chair Gregg noted trustees received a thorough investment update from CIO Patrick Sahm earlier that morning; that presentation likely contains private markets IRR/TVPI/DPI data but is not included in this document."
+        },
+        {
+          "signal_type": "Commitment Activity",
+          "description": "Two $100M commitments closed: Quantum Energy Partners IX (natural resources, 11/26/2025) and Updata Fund VIII (private equity, 12/5/2025); plus proposed $150M to Fund AN (infrastructure, pending). No performance metrics attached."
+        }
+      ],
+      "metadata": {
+        "source_organization": "District of Columbia Retirement Board (DCRB)",
+        "document_type": "Board Meeting Minutes (Draft)",
+        "document_date": "2026-01-29",
+        "reporting_period": "As of January 27, 2026"
+      },
+      "costUsd": 0.087819,
+      "inputTokens": 26603,
+      "outputTokens": 534,
+      "elapsedSec": 13.676,
+      "truncated": false
+    },
+    {
+      "caseId": "N1",
+      "caseName": "Bridgepoint — corporate financials (should reject)",
+      "grade": "PASS",
+      "found": 0,
+      "total": 0,
+      "metricMatches": [],
+      "forbiddenFound": [],
+      "metrics": [],
+      "costUsd": 0,
+      "elapsedSec": 0,
+      "earlyRejected": true,
+      "rejectReason": "Corporate financials detected (7 signals, 0 pension). Likely a manager annual report."
+    }
+  ]
+}

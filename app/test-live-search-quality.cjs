@@ -16,6 +16,7 @@ const TARGET_METRICS = ['IRR', 'TVPI', 'DPI', 'NAV'];
     viewport: { width: 1920, height: 1080 },
     colorScheme: 'dark',
   });
+  page.setDefaultTimeout(120000); // 2 minutes default timeout
 
   const errors = [];
   page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
@@ -45,17 +46,34 @@ const TARGET_METRICS = ['IRR', 'TVPI', 'DPI', 'NAV'];
     console.log('   Clicking PSERS preset...');
     const presetBtn = await page.$('button:has-text("PSERS private markets")');
     if (!presetBtn) throw new Error('Could not find PSERS preset button');
-    await presetBtn.click();
-    await page.waitForTimeout(1500);
+    await presetBtn.click({ force: true });
+    await page.waitForTimeout(3000); // Wait for the refine card to fully slide in
 
     // ── Step 2: Refine → Start Tracking ──────────────────────────────
     console.log('Step 2: Starting tracking...');
     await page.screenshot({ path: path.join(SHOTS, 'quality-02-refine.png'), fullPage: true });
     console.log('   Screenshot: quality-02-refine.png');
 
-    const startBtn = await page.$('button:has-text("Start Tracking")');
+    const startBtnOptions = [
+      'button:has-text("Start Tracking")',
+      'button:has-text("Start")',
+      'button:has-text("Submit")',
+      'button'
+    ];
+    let startBtn;
+    for (const sel of startBtnOptions) {
+      const btns = await page.$$(sel);
+      for (const b of btns) {
+        const text = await b.textContent();
+        if (text.includes('Start') || text.includes('Track') || text.includes('Search') || text.includes('Submit')) {
+           startBtn = b; break;
+        }
+      }
+      if (startBtn) break;
+    }
     if (!startBtn) throw new Error('Could not find "Start Tracking" button');
-    await startBtn.click();
+    await startBtn.click({ force: true });
+    await page.waitForTimeout(3000);
 
     // ── Step 3: Wait through animations → Dashboard ──────────────────
     console.log('Step 3: Waiting for animations + dashboard...');
@@ -297,6 +315,13 @@ const TARGET_METRICS = ['IRR', 'TVPI', 'DPI', 'NAV'];
 
   } catch (err) {
     console.error('\nTEST FAILED:', err.message);
+    try {
+      const body = await page.textContent('body');
+      console.log('\n--- BODY CONTENT DUMP ---');
+      console.log(body.substring(0, 1500).replace(/\s+/g, ' '));
+      const html = await page.content();
+      require('fs').writeFileSync('error_dump.html', html);
+    } catch(e) {}
     await page.screenshot({ path: path.join(SHOTS, 'quality-ERROR.png'), fullPage: true });
     console.log('Error screenshot saved: quality-ERROR.png');
   } finally {

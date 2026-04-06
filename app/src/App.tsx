@@ -9,11 +9,12 @@ import { ResultsPage } from './pages/ResultsPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { TrackersPage } from './pages/TrackersPage';
 import { UploadPage } from './pages/UploadPage';
+import { EvalPage } from './pages/EvalPage';
 import { useAppContext } from './context/AppContext';
 import { metrics } from './data/metrics';
 import type { LiveSearchTrackerSeed, Page } from './data/types';
 
-const pageOrder: Page[] = ['search', 'results', 'dashboard', 'trackers', 'upload'];
+const pageOrder: Page[] = ['search', 'results', 'dashboard', 'trackers', 'upload', 'eval'];
 
 /* ------------------------------------------------------------------ */
 /*  Flying Tracker Card — animates from search center to dashboard    */
@@ -243,6 +244,7 @@ function App() {
             {activePage === 'dashboard' && <DashboardPage onNavigate={handleNavigate} />}
             {activePage === 'trackers' && <TrackersPage onNavigate={handleNavigate} />}
             {activePage === 'upload' && <UploadPage onNavigate={handleNavigate} />}
+            {activePage === 'eval' && <EvalPage />}
           </motion.div>
         </AnimatePresence>
       </main>

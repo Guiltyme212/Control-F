@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, existsSync, appendFileSync } from 'fs'
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, existsSync, appendFileSync, readdirSync } from 'fs'
 import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { PDFDocument } from 'pdf-lib'
@@ -92,6 +92,45 @@ export default defineConfig({
         appendFileSync(LOG_FILE, `\n${'='.repeat(70)}\n  Server started: ${new Date().toISOString()}\n${'='.repeat(70)}\n`)
 
         server.middlewares.use(async (req, res, next) => {
+          // --- /Reference%20Files/ → serve local evidence PDFs for eval harness ---
+          if (req.url && decodeURIComponent(req.url).startsWith('/Reference Files/')) {
+            const filePath = join(resolve(__dirname, '..'), decodeURIComponent(req.url))
+            try {
+              const data = readFileSync(filePath)
+              res.setHeader('Content-Type', 'application/pdf')
+              res.setHeader('Content-Length', data.length.toString())
+              res.end(data)
+            } catch {
+              res.statusCode = 404
+              res.end('File not found')
+            }
+            return
+          }
+
+          // --- /api/eval-runs → list saved eval results for delta tracking ---
+          if (req.url?.startsWith('/api/eval-runs') && req.method === 'GET') {
+            const evalDir = join(__dirname, 'evals', 'gold-runs')
+            try {
+              mkdirSync(evalDir, { recursive: true })
+              const files = readdirSync(evalDir)
+                .filter((f: string) => f.endsWith('.json'))
+                .sort()
+                .reverse()
+                .slice(0, 10) // last 10 runs
+              const runs = files.map((f: string) => {
+                try {
+                  return JSON.parse(readFileSync(join(evalDir, f), 'utf-8'))
+                } catch { return null }
+              }).filter(Boolean)
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify(runs))
+            } catch {
+              res.setHeader('Content-Type', 'application/json')
+              res.end('[]')
+            }
+            return
+          }
+
           // --- /api/log → append to log file (UI-level logs) ---
           if (req.url?.startsWith('/api/log') && req.method === 'POST') {
             let body = ''
@@ -103,6 +142,26 @@ export default defineConfig({
                 const line = `${new Date().toISOString().slice(11, 19)} ${prefix} ${message}\n`
                 appendFileSync(LOG_FILE, line)
               } catch { /* ignore bad json */ }
+              res.statusCode = 204
+              res.end()
+            })
+            return
+          }
+
+          // --- /api/save-eval-result → save gold-case evaluation results ---
+          if (req.url?.startsWith('/api/save-eval-result') && req.method === 'POST') {
+            let body = ''
+            req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+            req.on('end', () => {
+              try {
+                const result = JSON.parse(body)
+                const evalDir = join(__dirname, 'evals', 'gold-runs')
+                mkdirSync(evalDir, { recursive: true })
+                const ts = new Date().toISOString().replace(/[:.]/g, '-')
+                const id = result.runId || 'eval'
+                const filename = `${ts}-${id}.json`
+                writeFileSync(join(evalDir, filename), JSON.stringify(result, null, 2))
+              } catch { /* ignore */ }
               res.statusCode = 204
               res.end()
             })

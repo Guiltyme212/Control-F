@@ -1,0 +1,220 @@
+{
+  "timestamp": "2026-04-06T01:17:49.091Z",
+  "casesRun": 2,
+  "passed": 2,
+  "partial": 0,
+  "failed": 0,
+  "totalCost": 0.270621,
+  "results": [
+    {
+      "caseId": "G5",
+      "caseName": "Santa Barbara PRR — one-year IRR",
+      "grade": "PASS",
+      "found": 1,
+      "total": 1,
+      "metricMatches": [
+        {
+          "expected": {
+            "metricType": "IRR",
+            "value": "8.40",
+            "valueIsPattern": true
+          },
+          "found": true,
+          "matchedValue": "8.40%",
+          "matchedType": "IRR",
+          "matchedAsset": "Private Real Return"
+        }
+      ],
+      "forbiddenFound": [],
+      "metrics": [
+        {
+          "metric": "IRR",
+          "value": "8.40%",
+          "asset_class": "Private Real Return",
+          "fund": "SBCERS PRR Portfolio",
+          "gp": "Hamilton Lane",
+          "evidence": "One-year IRR of 8.40%; Year Ended 6/30/2025 Point-to-Point IRR 8.40%",
+          "confidence": "high",
+          "page": 5
+        },
+        {
+          "metric": "IRR",
+          "value": "9.62%",
+          "asset_class": "Private Real Return",
+          "fund": "SBCERS PRR Portfolio",
+          "gp": "Hamilton Lane",
+          "evidence": "3-Year IRR: SBCERS PRR Portfolio 9.62%",
+          "confidence": "high",
+          "page": 6
+        },
+        {
+          "metric": "IRR",
+          "value": "14.25%",
+          "asset_class": "Private Real Return",
+          "fund": "SBCERS PRR Portfolio",
+          "gp": "Hamilton Lane",
+          "evidence": "5-Year IRR: SBCERS PRR Portfolio 14.25%",
+          "confidence": "high",
+          "page": 6
+        },
+        {
+          "metric": "IRR",
+          "value": "11.36%",
+          "asset_class": "Private Real Return",
+          "fund": "SBCERS PRR Portfolio",
+          "gp": "Hamilton Lane",
+          "evidence": "Since Inception IRR 11.36% as of 6/30/2025",
+          "confidence": "high",
+          "page": 5
+        },
+        {
+          "metric": "IRR",
+          "value": "6.67%",
+          "asset_class": "Private Real Return",
+          "fund": "SBCERS PRR Portfolio — Benchmark CPI-U + 400 bps",
+          "gp": "Hamilton Lane",
+          "evidence": "1-Year IRR CPI-U + 400 bps: 6.67%",
+          "confidence": "high",
+          "page": 6
+        },
+        {
+          "metric": "IRR",
+          "value": "6.87%",
+          "asset_class": "Private Real Return",
+          "fund": "SBCERS PRR Portfolio — Benchmark CPI-U + 400 bps",
+          "gp": "Hamilton Lane",
+          "evidence": "3-Year IRR CPI-U + 400 bps: 6.87%",
+          "confidence": "high",
+          "page": 6
+        },
+        {
+          "metric": "IRR",
+          "value": "8.58%",
+          "asset_class": "Private Real Return",
+          "fund": "SBCERS PRR Portfolio — Benchmark CPI-U + 400 bps",
+          "gp": "Hamilton Lane",
+          "evidence": "5-Year IRR CPI-U + 400 bps: 8.58%",
+          "confidence": "high",
+          "page": 6
+        },
+        {
+          "metric": "IRR",
+          "value": "6.76%",
+          "asset_class": "Private Real Return",
+          "fund": "SBCERS PRR Portfolio — Benchmark CPI-U + 400 bps",
+          "gp": "Hamilton Lane",
+          "evidence": "Since Inception IRR CPI-U + 400 bps: 6.76%",
+          "confidence": "high",
+          "page": 6
+        },
+        {
+          "metric": "IRR",
+          "value": "11.80%",
+          "asset_class": "Private Real Return",
+          "fund": "SBCERS PRR Portfolio — HL Natural Resources and Infrastructure Peer Benchmark",
+          "gp": "Hamilton Lane",
+          "evidence": "1-Year IRR HL Natural Resources and Infrastructure: 11.80%",
+          "confidence": "high",
+          "page": 6
+        },
+        {
+          "metric": "IRR",
+          "value": "9.11%",
+          "asset_class": "Private Real Return",
+          "fund": "SBCERS PRR Portfolio — HL Natural Resources and Infrastructure Peer Benchmark",
+          "gp": "Hamilton Lane",
+          "evidence": "3-Year IRR HL Natural Resources and Infrastructure: 9.11%",
+          "confidence": "high",
+          "page": 6
+        },
+        {
+          "metric": "IRR",
+          "value": "13.05%",
+          "asset_class": "Private Real Return",
+          "fund": "SBCERS PRR Portfolio — HL Natural Resources and Infrastructure Peer Benchmark",
+          "gp": "Hamilton Lane",
+          "evidence": "5-Year IRR HL Natural Resources and Infrastructure: 13.05%",
+          "confidence": "high",
+          "page": 6
+        },
+        {
+          "metric": "IRR",
+          "value": "6.49%",
+          "asset_class": "Private Real Return",
+          "fund": "SBCERS PRR Portfolio — HL Natural Resources and Infrastructure Peer Benchmark",
+          "gp": "Hamilton Lane",
+          "evidence": "Since Inception IRR HL Natural Resources and Infrastructure: 6.49%",
+          "confidence": "high",
+          "page": 6
+        }
+      ],
+      "signals": [
+        {
+          "signal_type": "Benchmark Outperformance",
+          "description": "SBCERS PRR 1-year IRR of 8.40% outperformed CPI-U+400bps (6.67%) by 173 bps but underperformed HL peer benchmark (11.80%) by 340 bps as of June 30, 2025"
+        },
+        {
+          "signal_type": "Since Inception Outperformance",
+          "description": "Since inception IRR of 11.36% outperformed CPI-U+400bps by 460 bps and HL peer benchmark by 487 bps; inception date 9/25/2013"
+        },
+        {
+          "signal_type": "Quarter IRR",
+          "description": "Q2 2025 point-to-point (quarterly) IRR of 3.08%; prior quarters: Q3 2024 2.33%, Q4 2024 1.05%, Q1 2025 1.71%"
+        }
+      ],
+      "metadata": {
+        "source_organization": "Santa Barbara County Employees' Retirement System (SBCERS)",
+        "document_type": "Performance Report",
+        "document_date": "2025-06-30",
+        "reporting_period": "Q2 2025 (Quarter and Year Ended June 30, 2025)"
+      },
+      "costUsd": 0.183522,
+      "inputTokens": 48904,
+      "outputTokens": 2454,
+      "elapsedSec": 28.926,
+      "truncated": false
+    },
+    {
+      "caseId": "N2",
+      "caseName": "DCRB — noisy board minutes (should flag weak)",
+      "grade": "PASS",
+      "found": 0,
+      "total": 0,
+      "metricMatches": [],
+      "forbiddenFound": [],
+      "metrics": [
+        {
+          "metric": "IRR",
+          "value": "No activity",
+          "asset_class": "Private Markets",
+          "fund": "DCRB Total Fund",
+          "gp": "",
+          "evidence": "No IRR/TVPI/DPI data presented in this board meeting minutes",
+          "confidence": "high",
+          "page": 5
+        }
+      ],
+      "signals": [
+        {
+          "signal_type": "Missing Data",
+          "description": "This document (board meeting minutes) contains no IRR, TVPI, or DPI metrics for private markets or any sub-strategy. Performance data referenced is limited to net total fund returns (14.1% CY2025, 10.25% FY2025, 4.3% FYTD2026, +6.6% 20-yr avg). Private markets performance details would be found in a separate investment performance report or IPC deck."
+        },
+        {
+          "signal_type": "Commitment Activity",
+          "description": "Three private markets commitments referenced: $150M to Fund AN (infrastructure, proposed), $100M to Quantum Energy Partners IX (natural resources, closed 2025-11-26), $100M to Updata Fund VIII (private equity, closed 2025-12-05)."
+        }
+      ],
+      "metadata": {
+        "source_organization": "District of Columbia Retirement Board (DCRB)",
+        "document_type": "Draft Open Board Meeting Minutes",
+        "document_date": "2026-01-29",
+        "reporting_period": "Fiscal Year 2026 (as of 2026-01-27)"
+      },
+      "costUsd": 0.087099,
+      "inputTokens": 26603,
+      "outputTokens": 486,
+      "elapsedSec": 12.485,
+      "truncated": false
+    }
+  ]
+}

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Zap, Sparkles, Bell, Activity, X, Plus, ChevronRight } from 'lucide-react';
 import { GradientDots } from '@/components/ui/gradient-dots';
-import type { LiveSearchTrackerSeed } from '../data/types';
+import type { LiveSearchTrackerSeed, AlertMode } from '../data/types';
 
 const presets = [
   'PSERS private markets IRR, TVPI, DPI, and NAV',
@@ -69,6 +69,20 @@ const DEFAULT_CONFIG = {
   assetClasses: ['Infrastructure', 'Private Equity', 'Real Assets'],
 };
 
+const ALERT_MODES: { value: AlertMode; label: string }[] = [
+  { value: 'new-reports-or-values', label: 'New reports or values' },
+  { value: 'new-values-only', label: 'Only new values' },
+  { value: 'new-documents-only', label: 'Only new documents' },
+];
+
+/** Join list naturally: "A, B, and C" */
+function naturalJoin(items: string[]): string {
+  if (items.length === 0) return '';
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
 const AMBIENT_PARTICLES = [
   { angle: 8, delay: 0, duration: 3.2, distance: 70, size: 2.2 },
   { angle: 64, delay: 0.7, duration: 3.8, distance: 92, size: 2.1 },
@@ -95,15 +109,19 @@ function ChipSection({ label, items, allItems, onAdd, onRemove }: ChipSectionPro
   const addable = allItems.filter((i) => !items.includes(i));
 
   return (
-    <div className="mb-5">
-      <div className="flex items-center justify-between mb-2.5">
-        <span className="text-xs font-semibold text-text-muted uppercase tracking-wider">{label}</span>
+    <div className="mb-4">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">{label}</span>
         {addable.length > 0 && (
           <button
             onClick={() => setEditing(!editing)}
-            className="text-xs text-accent-light hover:text-accent transition-colors cursor-pointer"
+            className={`text-[11px] transition-colors cursor-pointer flex items-center gap-0.5 ${
+              editing
+                ? 'text-accent-light hover:text-accent'
+                : 'text-text-muted/40 hover:text-accent-light'
+            }`}
           >
-            {editing ? 'Done' : 'Edit'}
+            {editing ? 'Done' : <><Plus className="w-3 h-3" /> Add</>}
           </button>
         )}
       </div>
@@ -277,6 +295,7 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
   const [refineMetrics, setRefineMetrics] = useState<string[]>(DEFAULT_CONFIG.metrics);
   const [refineAssetClasses, setRefineAssetClasses] = useState<string[]>(DEFAULT_CONFIG.assetClasses);
   const [refineFrequency, setRefineFrequency] = useState<Frequency>('Weekly');
+  const [refineAlertMode, setRefineAlertMode] = useState<AlertMode>('new-reports-or-values');
 
   const handleSearch = useCallback((searchQuery?: string) => {
     const q = searchQuery || query;
@@ -316,6 +335,7 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
             metrics: refineMetrics,
             assetClasses: refineAssetClasses,
             frequency: refineFrequency,
+            alertMode: refineAlertMode,
           }),
         PHASE_TIMINGS.morphing + PHASE_TIMINGS.departure,
       );
@@ -326,6 +346,7 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
     phase,
     onSearchComplete,
     query,
+    refineAlertMode,
     refineAssetClasses,
     refineEntities,
     refineFrequency,
@@ -636,9 +657,9 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                   {phase === 'refine' && (
                     <button
                       onClick={handleBackToIdle}
-                      className="text-[11px] text-accent-light/50 hover:text-accent-light transition-colors shrink-0 cursor-pointer"
+                      className="text-[11px] text-text-muted/40 hover:text-text-muted transition-colors shrink-0 cursor-pointer"
                     >
-                      Edit
+                      Back
                     </button>
                   )}
                 </div>
@@ -665,8 +686,6 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                           <div className="flex-1 h-px bg-gradient-to-r from-accent/20 via-border/50 to-transparent" />
                         </div>
 
-                        <p className="text-xs text-text-muted mb-4">Adjust before tracking</p>
-
                         <ChipSection
                           label="Pension Funds"
                           items={refineEntities}
@@ -690,16 +709,16 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                         />
 
                         {/* Frequency */}
-                        <div className="mb-5">
-                          <span className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-2.5 block">
+                        <div className="mb-4">
+                          <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider mb-2 block">
                             Frequency
                           </span>
-                          <div className="flex gap-2">
+                          <div className="flex gap-1.5">
                             {FREQUENCIES.map((f) => (
                               <button
                                 key={f}
                                 onClick={() => setRefineFrequency(f)}
-                                className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${refineFrequency === f
+                                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${refineFrequency === f
                                   ? 'bg-accent text-white'
                                   : 'bg-bg-hover/50 text-text-muted border border-border/50 hover:text-text-primary'
                                   }`}
@@ -710,7 +729,52 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                           </div>
                         </div>
 
-                        {/* Start Tracking */}
+                        {/* Alert mode */}
+                        <div className="mb-4">
+                          <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider mb-2 block">
+                            Alert Me When
+                          </span>
+                          <div className="flex flex-wrap gap-1.5">
+                            {ALERT_MODES.map((mode) => (
+                              <button
+                                key={mode.value}
+                                onClick={() => setRefineAlertMode(mode.value)}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${refineAlertMode === mode.value
+                                  ? 'bg-accent/20 text-accent-light border border-accent/30'
+                                  : 'bg-bg-hover/50 text-text-muted border border-border/50 hover:text-text-primary'
+                                  }`}
+                              >
+                                {mode.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Summary sentence */}
+                        <div className="mb-4 py-3 px-3.5 rounded-lg bg-bg-hover/30 border border-border/30">
+                          <p className="text-[12px] text-text-secondary leading-relaxed">
+                            {refineFrequency === 'Daily' ? 'Every day' : refineFrequency === 'Weekly' ? 'Every week' : 'Every month'}, monitor{' '}
+                            <span className="text-text-primary font-medium">{naturalJoin(refineEntities)}</span> performance reports for{' '}
+                            <span className="text-text-primary font-medium">{naturalJoin(refineMetrics)}</span>
+                            {refineAssetClasses.length > 0 && (
+                              <> across <span className="text-text-primary font-medium">{naturalJoin(refineAssetClasses)}</span></>
+                            )}.
+                          </p>
+                          <p className="text-[11px] text-text-muted/60 mt-1">
+                            {refineAlertMode === 'new-reports-or-values'
+                              ? 'Alert when new matching reports appear or values change.'
+                              : refineAlertMode === 'new-values-only'
+                              ? 'Alert only when metric values change.'
+                              : 'Alert only when new matching documents appear.'}
+                          </p>
+                        </div>
+
+                        {/* Baseline explanation */}
+                        <p className="text-[10px] text-text-muted/40 text-center mb-2">
+                          The first scan establishes your baseline. Future scans detect changes.
+                        </p>
+
+                        {/* CTA */}
                         <motion.button
                           onClick={handleStartTracking}
                           disabled={refineEntities.length === 0 || refineMetrics.length === 0}
@@ -718,7 +782,7 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                           whileTap={{ scale: 0.99 }}
                           className="w-full py-3 rounded-xl bg-accent text-white font-semibold text-sm hover:bg-accent-light transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                         >
-                          Start Tracking
+                          Create & Run First Scan
                           <ChevronRight className="w-4 h-4" />
                         </motion.button>
                       </div>

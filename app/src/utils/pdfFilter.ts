@@ -369,3 +369,122 @@ export function scoreFreshness(filename: string): { score: number; year: number 
 
   return { score, year, quarter };
 }
+
+/* ------------------------------------------------------------------ */
+/*  Early reject layer                                                 */
+/*  Catches corporate financials and wrong-entity docs before Claude   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Signals that indicate a corporate annual report / manager financials
+ * rather than a pension-fund document. If enough of these are present
+ * and no pension-fund signals exist, the doc should be rejected early.
+ */
+const CORPORATE_SIGNALS = [
+  'annual results', 'annual report and accounts', 'shareholder',
+  'earnings per share', 'dividend', 'revenue', 'ebitda',
+  'fee-paying aum', 'fee paying aum', 'fundraising',
+  'management company', 'group financial statements',
+  'consolidated statement', 'profit and loss', 'income statement',
+  'balance sheet', 'cash flow statement', 'operating profit',
+  'statutory accounts', 'auditor', 'directors\' report',
+  'share price', 'stock exchange', 'listed on',
+  'pre - performance related earnings', 'underlying fre',
+];
+
+const PENSION_FUND_SIGNALS = [
+  'pension', 'retirement', 'public employees', 'board of trustees',
+  'fiduciary', 'plan assets', 'defined benefit',
+  'investment committee', 'board of retirement',
+  'state investment', 'employee retirement',
+  'unfunded liability', 'actuarial',
+  'private markets', 'asset allocation',
+  'investment memo', 'investment recommendation',
+  'ipc report', 'due diligence',
+];
+
+export interface EarlyRejectResult {
+  /** Whether the document should be rejected before extraction */
+  shouldReject: boolean;
+  /** Reason for rejection (human-readable) */
+  reason: string;
+  /** Specific signals detected */
+  corporateSignals: string[];
+  pensionSignals: string[];
+  /** Confidence in the reject decision */
+  confidence: 'high' | 'medium' | 'low';
+}
+
+/**
+ * Check preview text from first few pages of a PDF for corporate/off-target signals.
+ * Call this BEFORE sending to Claude to avoid expensive extraction of wrong documents.
+ *
+ * @param previewText - Text from first 3-5 pages
+ * @param queryContext - The user's search query (for entity matching)
+ * @returns Reject decision with reasoning
+ */
+export function earlyRejectCheck(
+  previewText: string,
+  queryContext?: string,
+): EarlyRejectResult {
+  const text = previewText.toLowerCase();
+
+  // Count corporate vs pension signals
+  const corporateHits = CORPORATE_SIGNALS.filter((s) => text.includes(s));
+  const pensionHits = PENSION_FUND_SIGNALS.filter((s) => text.includes(s));
+
+  // Strong corporate signal with no pension signal = reject
+  if (corporateHits.length >= 3 && pensionHits.length === 0) {
+    return {
+      shouldReject: true,
+      reason: `Document appears to be corporate financials (${corporateHits.length} corporate signals, 0 pension signals). Likely a manager/company annual report, not a pension-fund document.`,
+      corporateSignals: corporateHits,
+      pensionSignals: pensionHits,
+      confidence: 'high',
+    };
+  }
+
+  // Moderate corporate signal (2+) with very few pension signals
+  if (corporateHits.length >= 2 && pensionHits.length <= 1) {
+    return {
+      shouldReject: true,
+      reason: `Document has strong corporate financial indicators (${corporateHits.slice(0, 3).join(', ')}). Unlikely to contain pension-fund metrics.`,
+      corporateSignals: corporateHits,
+      pensionSignals: pensionHits,
+      confidence: 'medium',
+    };
+  }
+
+  // Entity mismatch check: if the query names a specific pension fund,
+  // and the preview text mentions a different corporate entity prominently
+  if (queryContext) {
+    const query = queryContext.toLowerCase();
+    const knownPensionFunds = [
+      'psers', 'pera', 'isbi', 'minnesota sbi', 'samcera', 'sdcers',
+      'calpers', 'calstrs', 'ny state', 'new york', 'new jersey',
+      'dcrb', 'santa barbara',
+    ];
+
+    const queryMentionsFund = knownPensionFunds.some((f) => query.includes(f));
+
+    if (queryMentionsFund && corporateHits.length >= 1 && pensionHits.length === 0) {
+      // Query mentions a pension fund, but the doc looks corporate
+      return {
+        shouldReject: true,
+        reason: `Query targets a pension fund but this document appears to be corporate financials (no pension-fund signals found).`,
+        corporateSignals: corporateHits,
+        pensionSignals: pensionHits,
+        confidence: 'medium',
+      };
+    }
+  }
+
+  // No reject
+  return {
+    shouldReject: false,
+    reason: '',
+    corporateSignals: corporateHits,
+    pensionSignals: pensionHits,
+    confidence: 'low',
+  };
+}
