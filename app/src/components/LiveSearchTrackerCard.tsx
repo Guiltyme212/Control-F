@@ -1072,102 +1072,110 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
 
       if (cancelled) return;
 
-      // Auto-retry: if we found no usable metrics or only partial coverage, try the next best PDF.
+      // Auto-retry: if we found no usable metrics or only partial coverage, try next-best PDFs.
       const retryFocusMetrics = getFocusMetricTargets(liveTrackerQuery);
-      if ((allMetrics.length === 0 || shouldAutoRetry(allMetrics, retryFocusMetrics, 1)) && !cancelled) {
-        const extractedUrls = new Set(tracker.selectedPdfUrls);
-        const nextPdf = tracker.pdfLinks.find((link) => !extractedUrls.has(link.url));
-        if (nextPdf) {
-          retryPdfUrl = nextPdf.url;
-          const coverage = computeCoverageScore(allMetrics, retryFocusMetrics, liveTrackerAssetClasses);
-          setLiveTracker((current) =>
-            current
-              ? {
-                  ...current,
-                  selectedPdfUrls: [...current.selectedPdfUrls, nextPdf.url],
-                  extractionLogs: [
-                    ...current.extractionLogs,
-                    {
-                      message: `Found ${coverage.foundTypes.length} of ${retryFocusMetrics.length} requested metrics — retrying ${nextPdf.filename}${coverage.missingTypes.length > 0 ? ` (missing ${coverage.missingTypes.join(', ')})` : ''}.`,
-                      status: 'info' as const,
-                    },
-                  ],
-                  progress: {
-                    current: selectedPdfLinks.length + 1,
-                    total: selectedPdfLinks.length + 1,
-                    currentFile: nextPdf.filename,
-                  },
-                }
-              : current,
-          );
+      let retryAttempts = 0;
+      const MAX_RETRY_ATTEMPTS = 2;
 
-          const retryLog = (message: string, status: 'info' | 'done' | 'error' = 'info') => {
-            appendExtractionLog(message, status, false);
-          };
+      while (
+        !cancelled &&
+        retryAttempts < MAX_RETRY_ATTEMPTS &&
+        (allMetrics.length === 0 || shouldAutoRetry(allMetrics, retryFocusMetrics, retryAttempts, MAX_RETRY_ATTEMPTS))
+      ) {
+        // Use reviewedDocumentsByUrl (tracks all processed PDFs) instead of stale selectedPdfUrls snapshot
+        const processedUrls = new Set(reviewedDocumentsByUrl.keys());
+        // Pick next-best PDF: prefer ranked pdfLinks order (already sorted by preview score)
+        const nextPdf = tracker.pdfLinks.find((link) => !processedUrls.has(link.url));
+        if (!nextPdf) break;
 
-          try {
-            const retryFocusQuery = [
-              liveTrackerQuery,
-              liveTrackerMetrics.length ? `Focus metrics: ${liveTrackerMetrics.join(', ')}` : '',
-              liveTrackerAssetClasses.length ? `Asset classes: ${liveTrackerAssetClasses.join(', ')}` : '',
-            ].filter(Boolean).join(' | ');
-            retryLog(`Retrying with ${nextPdf.filename} after partial coverage`, 'info');
-            const retryResult = await extractMetricsFromPdfUrl(nextPdf.url, effectiveApiKey, retryLog, {
-              focusQuery: retryFocusQuery,
-            });
-            if (!cancelled) {
-              totalCostUsd += retryResult.costUsd ?? 0;
-              if (retryResult.wasEarlyRejected || retryResult.metadata.document_type === 'rejected') {
-                rememberReviewedDocument(
-                  nextPdf,
-                  'rejected',
-                  'retried',
-                  retryResult.skipReason ?? 'retry rejected before extraction',
+        retryAttempts++;
+        retryPdfUrl = nextPdf.url;
+        const coverage = computeCoverageScore(allMetrics, retryFocusMetrics, liveTrackerAssetClasses);
+        setLiveTracker((current) =>
+          current
+            ? {
+                ...current,
+                selectedPdfUrls: [...current.selectedPdfUrls, nextPdf.url],
+                extractionLogs: [
+                  ...current.extractionLogs,
                   {
-                    reviewedPages: retryResult.reviewedPageNumbers,
-                    totalPages: retryResult.totalPages,
-                    pageSubsetStrategy: retryResult.pageSubsetStrategy,
-                    skipReason: retryResult.skipReason,
-                    costUsd: retryResult.costUsd,
-                    elapsedSec: retryResult.elapsedSec,
+                    message: `Found ${coverage.foundTypes.length} of ${retryFocusMetrics.length} requested metrics — retrying ${nextPdf.filename} (attempt ${retryAttempts}/${MAX_RETRY_ATTEMPTS})${coverage.missingTypes.length > 0 ? ` (missing ${coverage.missingTypes.join(', ')})` : ''}.`,
+                    status: 'info' as const,
                   },
-                );
-                retryLog(`Retry stopped before extraction: ${nextPdf.filename}`, 'error');
-              } else {
-                allMetrics.push(...retryResult.metrics);
-                allSignals.push(...mapSignals(retryResult.signals));
-                const dedupedMetrics = deduplicateMetrics(allMetrics);
-                allMetrics.length = 0;
-                allMetrics.push(...dedupedMetrics);
-                rememberReviewedDocument(
-                  nextPdf,
-                  'extracted',
-                  'retried',
-                  'auto-retry after partial coverage',
-                  {
-                    reviewedPages: retryResult.reviewedPageNumbers,
-                    totalPages: retryResult.totalPages,
-                    pageSubsetStrategy: retryResult.pageSubsetStrategy,
-                    costUsd: retryResult.costUsd,
-                    elapsedSec: retryResult.elapsedSec,
-                  },
-                );
-
-              const finalCoverage = computeCoverageScore(allMetrics, retryFocusMetrics, liveTrackerAssetClasses);
-              retryLog(
-                `After retry: found ${finalCoverage.foundTypes.length} of ${retryFocusMetrics.length} requested metrics${finalCoverage.missingTypes.length > 0 ? ` — still missing ${finalCoverage.missingTypes.join(', ')}` : ''}`,
-                'done',
-              );
-              retryLog(`Retry PDF used: ${nextPdf.filename}`, 'done');
+                ],
+                progress: {
+                  current: selectedPdfLinks.length + retryAttempts,
+                  total: selectedPdfLinks.length + retryAttempts,
+                  currentFile: nextPdf.filename,
+                },
               }
-            }
-          } catch (error) {
-            if (!cancelled) {
-              const msg = error instanceof Error ? error.message : 'Retry extraction failed';
-              rememberReviewedDocument(nextPdf, 'failed', 'retried', msg, { skipReason: msg });
-              retryLog(`Retry error: ${msg}`, 'error');
-            }
+            : current,
+        );
+
+        const retryLog = (message: string, status: 'info' | 'done' | 'error' = 'info') => {
+          appendExtractionLog(message, status, false);
+        };
+
+        try {
+          const retryFocusQuery = [
+            liveTrackerQuery,
+            liveTrackerMetrics.length ? `Focus metrics: ${liveTrackerMetrics.join(', ')}` : '',
+            liveTrackerAssetClasses.length ? `Asset classes: ${liveTrackerAssetClasses.join(', ')}` : '',
+          ].filter(Boolean).join(' | ');
+          retryLog(`Retrying with ${nextPdf.filename} after partial coverage (attempt ${retryAttempts})`, 'info');
+          const retryResult = await extractMetricsFromPdfUrl(nextPdf.url, effectiveApiKey, retryLog, {
+            focusQuery: retryFocusQuery,
+          });
+          if (cancelled) return;
+          totalCostUsd += retryResult.costUsd ?? 0;
+          if (retryResult.wasEarlyRejected || retryResult.metadata.document_type === 'rejected') {
+            rememberReviewedDocument(
+              nextPdf,
+              'rejected',
+              'retried',
+              retryResult.skipReason ?? 'retry rejected before extraction',
+              {
+                reviewedPages: retryResult.reviewedPageNumbers,
+                totalPages: retryResult.totalPages,
+                pageSubsetStrategy: retryResult.pageSubsetStrategy,
+                skipReason: retryResult.skipReason,
+                costUsd: retryResult.costUsd,
+                elapsedSec: retryResult.elapsedSec,
+              },
+            );
+            retryLog(`Retry stopped before extraction: ${nextPdf.filename}`, 'error');
+          } else {
+            allMetrics.push(...retryResult.metrics);
+            allSignals.push(...mapSignals(retryResult.signals));
+            const dedupedMetrics = deduplicateMetrics(allMetrics);
+            allMetrics.length = 0;
+            allMetrics.push(...dedupedMetrics);
+            rememberReviewedDocument(
+              nextPdf,
+              'extracted',
+              'retried',
+              `auto-retry after partial coverage (attempt ${retryAttempts})`,
+              {
+                reviewedPages: retryResult.reviewedPageNumbers,
+                totalPages: retryResult.totalPages,
+                pageSubsetStrategy: retryResult.pageSubsetStrategy,
+                costUsd: retryResult.costUsd,
+                elapsedSec: retryResult.elapsedSec,
+              },
+            );
+
+            const finalCoverage = computeCoverageScore(allMetrics, retryFocusMetrics, liveTrackerAssetClasses);
+            retryLog(
+              `After retry ${retryAttempts}: found ${finalCoverage.foundTypes.length} of ${retryFocusMetrics.length} requested metrics${finalCoverage.missingTypes.length > 0 ? ` — still missing ${finalCoverage.missingTypes.join(', ')}` : ''}`,
+              'done',
+            );
+            retryLog(`Retry PDF used: ${nextPdf.filename}`, 'done');
           }
+        } catch (error) {
+          if (cancelled) return;
+          const msg = error instanceof Error ? error.message : 'Retry extraction failed';
+          rememberReviewedDocument(nextPdf, 'failed', 'retried', msg, { skipReason: msg });
+          retryLog(`Retry error: ${msg}`, 'error');
         }
       }
 
@@ -2716,7 +2724,8 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
               }`}
             >
               {/* Header */}
-              <div className="px-4 pt-4 pb-3 flex items-center gap-2">
+              <div className="px-4 pt-4 pb-3">
+                <div className="flex items-center gap-2">
                 {resultAssessment?.isWeakMatch ? (
                   <AlertTriangle className="w-4 h-4 text-yellow shrink-0" />
                 ) : isPartialMatch ? (
@@ -2733,9 +2742,20 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
                         ? `All ${requestedMetricTypes.length} requested metrics found`
                         : 'Extraction complete'}
                 </span>
-                <span className="text-[11px] text-text-muted ml-auto shrink-0">
+                <span className="hidden">
                   {liveTracker.foundMetrics.length} rows · {reviewedDocumentPhrase}
                 </span>
+                <span className="text-[11px] text-text-muted ml-auto shrink-0">
+                  {completionSecondaryMetrics.length > 0 && !showAdditionalCompletionRows
+                    ? `${completionPrimaryMetrics.length} direct rows • ${completionSecondaryMetrics.length} broader hidden`
+                    : `${completionDisplayedMetrics.length} rows • ${reviewedDocumentPhrase}`}
+                </span>
+                </div>
+                {completionSecondaryMetrics.length > 0 && !showAdditionalCompletionRows && (
+                  <p className="mt-1.5 pl-6 text-[11px] text-text-muted/65">
+                    Direct matches are shown first. Broader portfolio rows are tucked underneath.
+                  </p>
+                )}
               </div>
 
               {/* Results table — identical to ResultsPage */}

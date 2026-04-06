@@ -265,17 +265,32 @@ function loadPdf(filename) {
 // ---------------------------------------------------------------------------
 // Focus instruction builder
 // ---------------------------------------------------------------------------
-function buildFocusInstruction(query) {
+function getRequestedMetricTypes(query) {
+  const aliases = [
+    { label: 'IRR', aliases: ['irr', 'internal rate of return'] },
+    { label: 'TVPI', aliases: ['tvpi'] },
+    { label: 'DPI', aliases: ['dpi'] },
+    { label: 'NAV', aliases: ['nav', 'net asset value'] },
+    { label: 'AUM', aliases: ['aum', 'assets under management'] },
+    { label: 'Commitment', aliases: ['commitment', 'commitments', 'committed'] },
+    { label: 'Co-Investment', aliases: ['co-investment', 'co investment', 'coinvestment'] },
+    { label: 'Management Fee', aliases: ['management fee', 'mgmt fee'] },
+    { label: 'Carry', aliases: ['carry', 'carried interest'] },
+    { label: 'Target Fund Size', aliases: ['target fund size', 'fund size'] },
+    { label: 'Target Return', aliases: ['target return'] },
+    { label: 'Distribution', aliases: ['distribution', 'distributions'] },
+    { label: 'Capital Call', aliases: ['capital call', 'capital calls'] },
+    { label: 'Asset Allocation', aliases: ['asset allocation'] },
+  ];
   const q = query.toLowerCase();
-  const hints = [];
-  if (q.includes('irr')) hints.push('IRR');
-  if (q.includes('tvpi')) hints.push('TVPI');
-  if (q.includes('dpi')) hints.push('DPI');
-  if (q.includes('nav')) hints.push('NAV');
-  if (q.includes('aum')) hints.push('AUM');
+  return aliases.filter(d => d.aliases.some(a => q.includes(a))).map(d => d.label);
+}
+
+function buildFocusInstruction(query) {
+  const hints = getRequestedMetricTypes(query);
 
   const metricHint = hints.length
-    ? ` ONLY extract these metric types: ${hints.join(', ')}. Extract one row per asset class or sub-strategy. Do NOT extract individual GP/manager-level rows — only summary-level data.`
+    ? ` ONLY extract these metric types: ${hints.join(', ')}. Extract at the asset-class and total-portfolio level. Only include GP/manager-level detail when no asset-class summary is available.`
     : '';
 
   return `\n\nSearch focus: "${query}"${metricHint}\n\nPrioritize extracting metrics that directly answer this search query. Include all relevant rows for the requested metric types, but skip large tables that are entirely unrelated to the search focus. IMPORTANT: Your response must end with valid JSON — do not add any explanation after the closing brace.`;

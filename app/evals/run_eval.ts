@@ -342,16 +342,15 @@ function scoreCompletenessLabel(gold: GoldCase, run: RunArtifact): DimensionResu
     };
   }
 
-  // If allowed_partial and coverage < 1.0, "partial" or "partial-subset" are acceptable
+  // If allowed_partial and coverage < 1.0, "partial" is acceptable
   if (gold.allowed_partial && coverage < 1.0) {
-    const acceptable = ["partial", "partial-subset"];
-    const ok = acceptable.includes(label);
+    const ok = label === "partial";
     return {
       name: "Completeness label",
       passed: ok,
       detail: ok
         ? `Label "${label}" acceptable for partial coverage=${coverage}`
-        : `Label "${label}" unexpected — expected partial/partial-subset for coverage=${coverage}`,
+        : `Label "${label}" unexpected — expected partial for coverage=${coverage}`,
     };
   }
 

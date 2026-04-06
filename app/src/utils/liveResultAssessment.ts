@@ -17,7 +17,7 @@ interface AssessLiveResultArgs {
   assetClassHints?: string[];
 }
 
-export type CompletenessLabel = 'complete' | 'partial' | 'partial-subset' | 'weak';
+export type CompletenessLabel = 'complete' | 'partial' | 'weak';
 
 export interface LiveResultAssessment {
   isWeakMatch: boolean;
@@ -61,11 +61,12 @@ function deriveCompleteness(
   focusMetricTypes: string[],
   missingFocusMetrics: string[],
   matchedFocusMetrics: Metric[],
+  meaningfulMetricCount: number,
 ): CompletenessLabel {
   if (isWeakMatch) return 'weak';
   if (focusMetricTypes.length === 0) {
-    // Broad query — partial if no performance metrics, complete otherwise
-    return matchedFocusMetrics.length > 0 || !isWeakMatch ? 'complete' : 'partial';
+    // Broad query — complete only if we actually found meaningful metrics
+    return meaningfulMetricCount > 0 ? 'complete' : 'partial';
   }
   if (missingFocusMetrics.length === 0) return 'complete';
   if (matchedFocusMetrics.length > 0) return 'partial';
@@ -89,7 +90,7 @@ function buildAssessment(
 ): LiveResultAssessment {
   return {
     isWeakMatch,
-    completeness: deriveCompleteness(isWeakMatch, focusMetricTypes, missingFocusMetrics, matchedFocusMetrics),
+    completeness: deriveCompleteness(isWeakMatch, focusMetricTypes, missingFocusMetrics, matchedFocusMetrics, meaningfulMetrics.length),
     headline,
     detail,
     hideSignals,
@@ -345,20 +346,29 @@ export function computeCoverageScore(
     ),
   );
 
-  // Don't count metric types that only have proxy matches (e.g., "Multiple of Cost" ≠ TVPI)
+  // Solid matches: at least one non-proxy match for the metric type
   const solidFoundTypes = foundTypes.filter((metricType) => {
     const matchingMetrics = scopedMetrics.filter((m) => metricMatchesRequestedFocus(m, [metricType]));
-    // At least one non-proxy match required
     return matchingMetrics.some((m) => !isProxyMetricMatch(m));
   });
 
+  // Proxy-only matches: metric type found but only via proxy (e.g., "Multiple of Cost" for TVPI)
+  const proxyOnlyTypes = foundTypes.filter((metricType) => {
+    if (solidFoundTypes.includes(metricType)) return false;
+    const matchingMetrics = scopedMetrics.filter((m) => metricMatchesRequestedFocus(m, [metricType]));
+    return matchingMetrics.length > 0 && matchingMetrics.every((m) => isProxyMetricMatch(m));
+  });
+
   const missingTypes = sortMetricNames(
-    requestedMetricTypes.filter((metricType) => !solidFoundTypes.includes(metricType)),
+    requestedMetricTypes.filter((metricType) => !solidFoundTypes.includes(metricType) && !proxyOnlyTypes.includes(metricType)),
   );
 
+  // Proxy-only matches get 0.5 credit each
+  const score = (solidFoundTypes.length + proxyOnlyTypes.length * 0.5) / requestedMetricTypes.length;
+
   return {
-    score: solidFoundTypes.length / requestedMetricTypes.length,
-    foundTypes: solidFoundTypes,
+    score,
+    foundTypes: [...solidFoundTypes, ...proxyOnlyTypes],
     missingTypes,
   };
 }
@@ -372,5 +382,6 @@ export function shouldAutoRetry(
   if (requestedMetricTypes.length === 0) return false;
   if (attemptCount >= maxAttempts) return false;
   const { score } = computeCoverageScore(metrics, requestedMetricTypes);
-  return score < 1.0;
+  // Don't retry if we already found 75%+ of requested metrics — the rest may not exist
+  return score < 0.75;
 }

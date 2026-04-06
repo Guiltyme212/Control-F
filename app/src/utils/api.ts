@@ -119,23 +119,18 @@ Return ONLY valid JSON (no markdown fences, no explanation, no preamble) with th
 }
 
 Rules:
-1. ONLY extract metrics of type ${typeList}. Do NOT extract commitments, fees, allocations, or any other metric types.
-2. Extract one row per asset class or sub-strategy (e.g. Private Equity, Real Estate, Credit, Infrastructure, Total Private Markets). Do NOT extract individual GP/manager-level rows.
+1. ONLY extract metrics of type ${typeList}. Do NOT extract unrelated metric types.
+2. Extract at the asset-class and total-portfolio level (e.g. Private Equity, Real Estate, Credit, Infrastructure, Total Private Markets). Only include GP/manager-level detail when the document does not provide an asset-class summary for that metric type.
 3. For each asset class, create separate entries for each requested metric type. Never skip one because you already extracted the others.
 4. For performance metrics (IRR, TVPI, DPI), extract ONLY the inception-to-date (ITD) or since-inception value. Do NOT create separate rows for different time horizons (1-year, 3-year, 5-year, 10-year, etc.).
 5. Always include evidence_text.
-6. Keep the response concise — only the requested metrics, nothing else.`;
+6. Keep the response concise — only the requested metrics, nothing else.
+7. When both summary rows (Total Private Markets, Combined Portfolio, Total Fund) and detail rows exist, prefer the summary. Include fund-level detail only if no summary row is available for that metric type and asset class.`;
 }
 
 function getSystemPrompt(focusQuery?: string): string {
   if (!focusQuery) return SYSTEM_PROMPT_BROAD;
-  const normalized = normalizeForSearch(focusQuery);
-  const metricTypes: string[] = [];
-  if (normalized.includes('irr')) metricTypes.push('IRR');
-  if (normalized.includes('tvpi')) metricTypes.push('TVPI');
-  if (normalized.includes('dpi')) metricTypes.push('DPI');
-  if (normalized.includes('nav')) metricTypes.push('NAV');
-  if (normalized.includes('aum')) metricTypes.push('AUM');
+  const metricTypes = getRequestedMetricTypes(focusQuery);
   if (metricTypes.length > 0) return buildFocusedSystemPrompt(metricTypes);
   return SYSTEM_PROMPT_BROAD;
 }
@@ -246,14 +241,7 @@ function collectMatchedKeywords(text: string, keywords: string[]): string[] {
 function buildFocusInstruction(focusQuery?: string): string {
   if (!focusQuery) return '';
 
-  const normalizedQuery = normalizeForSearch(focusQuery);
-  const focusMetricHints: string[] = [];
-
-  if (normalizedQuery.includes('irr')) focusMetricHints.push('IRR');
-  if (normalizedQuery.includes('tvpi')) focusMetricHints.push('TVPI');
-  if (normalizedQuery.includes('dpi')) focusMetricHints.push('DPI');
-  if (normalizedQuery.includes('nav')) focusMetricHints.push('NAV');
-  if (normalizedQuery.includes('aum')) focusMetricHints.push('AUM');
+  const focusMetricHints = getRequestedMetricTypes(focusQuery);
 
   const metricHintText = focusMetricHints.length
     ? ` ONLY extract these metric types: ${focusMetricHints.join(', ')}. Extract one row per asset class or sub-strategy (e.g. Private Equity, Real Estate, Credit, Infrastructure, Total). Do NOT extract individual GP/manager-level rows — only summary-level data.`
@@ -756,8 +744,9 @@ function parseOrSalvageJson(raw: string): ExtractedData {
   }
 
   // Find the last complete object boundary (closing brace followed by comma or array end)
+  // Ensure it's inside the extracted_metrics array, not in cross_reference_signals or metadata
   const lastCompleteObj = jsonStr.lastIndexOf('},');
-  if (lastCompleteObj === -1) {
+  if (lastCompleteObj === -1 || lastCompleteObj < metricsStart) {
     throw new Error(`No complete metrics found. Preview: ${jsonStr.slice(0, 300)}`);
   }
 
@@ -1199,6 +1188,8 @@ ${numberedList}
 Which 1-2 files most likely contain the requested metrics?
 
 Rules:
+- Each file may include a Preview score (higher = more relevant financial content found in pages 1-5) and matched metric types. Strongly prefer files with higher preview scores and matching metric types.
+- Files with warnings like "financial statements" or "allocation-heavy summary" are much less likely to contain performance multiples — avoid them.
 - Prefer disclosure reports, portfolio reports, performance reviews, combined portfolio reports
 - Avoid financial statements, balance sheets, ACFR, agendas, minutes
 - "Quarterly statement" is usually a balance sheet (bad). "Quarterly disclosure report" is usually performance data (good).
@@ -1244,8 +1235,12 @@ Return ONLY a JSON array of file numbers, e.g. [3] or [3, 7]. Nothing else.`;
       .map((n: number) => candidates[n - 1]);
 
     return selected.length > 0 ? selected : candidates.slice(0, 2);
-  } catch {
+  } catch (error) {
     // Any failure — fall back to first 2 by heuristic rank
+    serverLog('LLM_SELECTION_FALLBACK', {
+      reason: error instanceof Error ? error.message : 'unknown',
+      candidateCount: candidates.length,
+    });
     return candidates.slice(0, 2);
   }
 }
@@ -1479,7 +1474,7 @@ export async function extractMetricsFromPdfUrl(
       ? getFocusKeywords(options.focusQuery!, detectSearchIntents(options.focusQuery!))
       : [];
     const scores = await scorePages(pdfBytes, focusKeywordsForScoring);
-    const relevantPages = selectTopPages(scores, maxFilteredPages);
+    const relevantPages = selectTopPages(scores, maxFilteredPages, hasSpecificMetricFocus);
 
     if (relevantPages.length === 0) {
       const fallbackPages = buildPageRange(1, Math.min(MAX_PDF_PAGES, info.totalPages));
@@ -1570,10 +1565,16 @@ export async function fetchPdfPreviewSubset(
   return new Uint8Array(await response.arrayBuffer());
 }
 
+function normalizeMetricValue(value: string): string {
+  return value.trim().toLowerCase()
+    .replace(/(\.\d*?)0+(%|x)\b/g, '$1$2')  // 8.50% → 8.5%, 1.20x → 1.2x
+    .replace(/\.(%|x)/g, '$1');               // 8.% → 8%
+}
+
 export function deduplicateMetrics(metrics: Metric[]): Metric[] {
   const seen = new Set<string>();
   return metrics.filter((m) => {
-    const key = `${m.metric}|${m.fund}|${m.asset_class}|${m.value}`.toLowerCase();
+    const key = `${m.metric}|${m.lp}|${m.fund}|${m.asset_class}|${normalizeMetricValue(m.value)}`.toLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

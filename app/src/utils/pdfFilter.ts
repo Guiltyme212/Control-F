@@ -212,6 +212,10 @@ export function scorePreviewText(
     if (requestedMetricTypes.length > 0 && matchedMetricTypes.length === requestedMetricTypes.length) {
       score += 20;
     }
+    // Proportional bonus: smoother gradient between 1/3 and 3/3 metric match
+    if (requestedMetricTypes.length > 0) {
+      score += Math.round(matchedMetricTypes.length / requestedMetricTypes.length * 15);
+    }
   }
 
   let numericSignalCount = 0;
@@ -339,7 +343,7 @@ export async function scorePages(pdfData: Uint8Array, focusKeywords: string[] = 
   return scores;
 }
 
-export function selectTopPages(scores: PageScore[], maxPages: number): number[] {
+export function selectTopPages(scores: PageScore[], maxPages: number, focused = false): number[] {
   const totalPages = scores.length;
   const topHits = scores
     .filter((p) => p.score > 0)
@@ -359,7 +363,7 @@ export function selectTopPages(scores: PageScore[], maxPages: number): number[] 
   for (let i = 1; i < sortedHits.length; i++) {
     const hit = sortedHits[i];
     const lastPage = currentCluster.pages[currentCluster.pages.length - 1];
-    if (hit.pageNum - lastPage <= 3) {
+    if (hit.pageNum - lastPage <= 5) {
       // Same cluster
       currentCluster.pages.push(hit.pageNum);
       currentCluster.maxScore = Math.max(currentCluster.maxScore, hit.score);
@@ -374,23 +378,24 @@ export function selectTopPages(scores: PageScore[], maxPages: number): number[] 
   // Sort clusters by max score (strongest cluster first)
   clusters.sort((a, b) => b.maxScore - a.maxScore);
 
-  // Keep top 3 clusters max
-  const topClusters = clusters.slice(0, 3);
+  // Keep top 4 clusters max (multi-section performance reports can have 4+ data sections)
+  const topClusters = clusters.slice(0, 4);
 
   // Expand each cluster with neighbor pages
   const windowPages = new Set<number>();
   for (const cluster of topClusters) {
     const minPage = Math.min(...cluster.pages);
     const maxPage = Math.max(...cluster.pages);
-    // For strong clusters (score > 30), widen to ±2 to catch summary/total rows
-    const widen = cluster.maxScore > 30 ? 2 : 1;
+    // Widen by cluster strength: strong clusters get ±3 to catch multi-page tables and summary rows
+    const widen = cluster.maxScore > 30 ? 3 : cluster.maxScore > 15 ? 2 : 1;
     for (let p = Math.max(1, minPage - widen); p <= Math.min(totalPages, maxPage + widen); p++) {
       windowPages.add(p);
     }
   }
 
-  // Cap at a reasonable limit (slightly above maxPages to allow windows)
-  const windowMax = Math.min(Math.ceil(maxPages * 1.6), maxPages + 6);
+  // Cap at a reasonable limit (slightly above maxPages to allow windows; wider for focused queries)
+  const multiplier = focused ? 2.0 : 1.6;
+  const windowMax = Math.min(Math.ceil(maxPages * multiplier), maxPages + 8);
   return [...windowPages]
     .sort((a, b) => a - b)
     .slice(0, windowMax);
