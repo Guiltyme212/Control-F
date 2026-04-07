@@ -7,9 +7,9 @@ interface MetricAliasDefinition {
 
 const METRIC_ALIAS_DEFINITIONS: MetricAliasDefinition[] = [
   { label: 'IRR', aliases: ['irr', 'internal rate of return'] },
-  { label: 'TVPI', aliases: ['tvpi'] },
-  { label: 'DPI', aliases: ['dpi'] },
-  { label: 'NAV', aliases: ['nav', 'net asset value', 'market value'] },
+  { label: 'TVPI', aliases: ['tvpi', 'investment multiple', 'total value to paid-in'] },
+  { label: 'DPI', aliases: ['dpi', 'distributions to paid-in'] },
+  { label: 'NAV', aliases: ['nav', 'net asset value', 'market value', 'portfolio value'] },
   { label: 'AUM', aliases: ['aum', 'assets under management'] },
   { label: 'Asset Allocation', aliases: ['asset allocation'] },
   { label: 'Commitment', aliases: ['commitment', 'commitments', 'committed'] },
@@ -19,7 +19,7 @@ const METRIC_ALIAS_DEFINITIONS: MetricAliasDefinition[] = [
   { label: 'Target Fund Size', aliases: ['target fund size', 'fund size'] },
   { label: 'Target Return', aliases: ['target return'] },
   { label: 'Distribution', aliases: ['distribution', 'distributions'] },
-  { label: 'Capital Call', aliases: ['capital call', 'capital calls'] },
+  { label: 'Capital Call', aliases: ['capital call', 'capital calls', 'capital contributions', 'paid-in capital'] },
 ];
 
 const SPECIFIC_PERFORMANCE_METRICS = new Set(['IRR', 'TVPI', 'DPI', 'NAV', 'AUM']);

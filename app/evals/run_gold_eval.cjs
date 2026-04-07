@@ -268,9 +268,9 @@ function loadPdf(filename) {
 function getRequestedMetricTypes(query) {
   const aliases = [
     { label: 'IRR', aliases: ['irr', 'internal rate of return'] },
-    { label: 'TVPI', aliases: ['tvpi'] },
-    { label: 'DPI', aliases: ['dpi'] },
-    { label: 'NAV', aliases: ['nav', 'net asset value', 'market value'] },
+    { label: 'TVPI', aliases: ['tvpi', 'investment multiple', 'total value to paid-in'] },
+    { label: 'DPI', aliases: ['dpi', 'distributions to paid-in'] },
+    { label: 'NAV', aliases: ['nav', 'net asset value', 'market value', 'portfolio value'] },
     { label: 'AUM', aliases: ['aum', 'assets under management'] },
     { label: 'Commitment', aliases: ['commitment', 'commitments', 'committed'] },
     { label: 'Co-Investment', aliases: ['co-investment', 'co investment', 'coinvestment'] },
@@ -279,7 +279,7 @@ function getRequestedMetricTypes(query) {
     { label: 'Target Fund Size', aliases: ['target fund size', 'fund size'] },
     { label: 'Target Return', aliases: ['target return'] },
     { label: 'Distribution', aliases: ['distribution', 'distributions'] },
-    { label: 'Capital Call', aliases: ['capital call', 'capital calls'] },
+    { label: 'Capital Call', aliases: ['capital call', 'capital calls', 'capital contributions', 'paid-in capital'] },
     { label: 'Asset Allocation', aliases: ['asset allocation'] },
   ];
   const q = query.toLowerCase();
