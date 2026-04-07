@@ -48,6 +48,45 @@ function mapMetricLabel(label: string): string {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Entity extraction for unknown funds                                */
+/* ------------------------------------------------------------------ */
+
+const STRIP_WORDS = new Set([
+  // Metric keywords
+  'irr', 'tvpi', 'dpi', 'nav', 'aum', 'commitment', 'commitments', 'committed',
+  'management fee', 'carry', 'target return', 'target fund size', 'distribution',
+  'distributions', 'capital call', 'capital calls', 'asset allocation',
+  'co-investment', 'termination', 'market value', 'portfolio value',
+  // Asset class keywords
+  'private equity', 'infrastructure', 'credit', 'private credit', 'real assets',
+  'real estate', 'natural resources', 'public equities', 'private markets',
+  // Intent keywords
+  'performance', 'quarterly', 'annual', 'board', 'meeting', 'minutes',
+  'agenda', 'financial', 'report', 'reports', 'review', 'new', 'fund',
+  'investments', 'approvals', 'manager',
+]);
+
+function extractEntityFromQuery(query: string): string | null {
+  let remaining = query;
+  // Strip known keywords (longest first to avoid partial removal)
+  const sortedStrips = [...STRIP_WORDS].sort((a, b) => b.length - a.length);
+  for (const word of sortedStrips) {
+    remaining = remaining.replace(new RegExp(`\\b${word}\\b`, 'gi'), ' ');
+  }
+  // Clean up whitespace and trim
+  remaining = remaining.replace(/\s+/g, ' ').trim();
+  // If something meaningful remains (at least 2 chars), use it as entity name
+  if (remaining.length >= 2) {
+    // Title-case the result
+    return remaining
+      .split(' ')
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+  }
+  return null;
+}
+
+/* ------------------------------------------------------------------ */
 /*  parseQueryConfig                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -73,6 +112,16 @@ export function parseQueryConfig(query: string): {
       matchedEntities.add(name);
     }
   }
+
+  // If no known fund matched, extract the entity name from the query text.
+  // Strip out metric keywords, asset class keywords, and common filler to isolate the fund name.
+  if (matchedEntities.size === 0) {
+    const strippedQuery = extractEntityFromQuery(query);
+    if (strippedQuery) {
+      matchedEntities.add(strippedQuery);
+    }
+  }
+
   const entities = Array.from(matchedEntities);
 
   // --- Metrics ---

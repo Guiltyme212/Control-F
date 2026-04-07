@@ -461,6 +461,55 @@ function buildSearchQuery(query: string, entry: SourceRegistryEntry, intents: Se
   return `${query} ${entry.pensionFund} ${entry.label} ${intentTerms} site:${host}`;
 }
 
+async function discoverUnknownFundSources(
+  query: string,
+  pensionFunds: string[],
+  intents: SearchIntent[],
+): Promise<SourceSearchCandidate[]> {
+  const fundName = pensionFunds[0] || query;
+  const intentTerms = intents.flatMap((intent) => INTENT_KEYWORDS[intent]).slice(0, 3).join(' ');
+  const searchQuery = `${fundName} pension fund ${intentTerms} PDF filetype:pdf`;
+
+  try {
+    const response = await fetchWithTimeout(
+      'https://api.firecrawl.dev/v1/search',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${getFirecrawlApiKey()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: searchQuery,
+          limit: FIRECRAWL_SEARCH_LIMIT,
+          timeout: FIRECRAWL_TIMEOUT_MS,
+        }),
+      },
+      FIRECRAWL_TIMEOUT_MS,
+      'Open web search timed out.',
+    );
+
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    if (!data.success || !data.data?.length) return [];
+
+    return (data.data as FirecrawlSearchItem[]).map((item, idx) => ({
+      id: `web-${idx}`,
+      registryId: 'web-search',
+      pensionFund: fundName,
+      label: item.title || item.url,
+      url: item.url,
+      description: item.description || `Web search result for ${fundName}`,
+      score: 10 - idx,
+      matchedKeywords: [],
+      documentType: 'general' as const,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 async function firecrawlSearch(query: string, entry: SourceRegistryEntry, intents: SearchIntent[]): Promise<FirecrawlSearchItem[]> {
   const response = await fetchWithTimeout(
     'https://api.firecrawl.dev/v1/search',
@@ -636,11 +685,17 @@ export async function discoverSourceCandidates(
     return ranked.slice(0, 6);
   }
 
-  return sourceRegistry
-    .filter((entry) => pensionFundFilter.size === 0 || pensionFundFilter.has(normalizeForSearch(entry.pensionFund)))
-    .map((entry) => toFallbackCandidate(entry, scoreRegistryEntry(entry, query, intents)))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
+  // If we had registry entries but no search results, use registry fallbacks
+  if (eligibleEntries.length > 0) {
+    return sourceRegistry
+      .filter((entry) => pensionFundFilter.size === 0 || pensionFundFilter.has(normalizeForSearch(entry.pensionFund)))
+      .map((entry) => toFallbackCandidate(entry, scoreRegistryEntry(entry, query, intents)))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+  }
+
+  // No registry entries matched — unknown fund. Use open web search via Firecrawl.
+  return discoverUnknownFundSources(query, pensionFunds, intents);
 }
 
 /* ------------------------------------------------------------------ */
