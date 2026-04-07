@@ -270,7 +270,7 @@ function getRequestedMetricTypes(query) {
     { label: 'IRR', aliases: ['irr', 'internal rate of return'] },
     { label: 'TVPI', aliases: ['tvpi'] },
     { label: 'DPI', aliases: ['dpi'] },
-    { label: 'NAV', aliases: ['nav', 'net asset value'] },
+    { label: 'NAV', aliases: ['nav', 'net asset value', 'market value'] },
     { label: 'AUM', aliases: ['aum', 'assets under management'] },
     { label: 'Commitment', aliases: ['commitment', 'commitments', 'committed'] },
     { label: 'Co-Investment', aliases: ['co-investment', 'co investment', 'coinvestment'] },

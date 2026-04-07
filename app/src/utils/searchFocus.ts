@@ -9,7 +9,7 @@ const METRIC_ALIAS_DEFINITIONS: MetricAliasDefinition[] = [
   { label: 'IRR', aliases: ['irr', 'internal rate of return'] },
   { label: 'TVPI', aliases: ['tvpi'] },
   { label: 'DPI', aliases: ['dpi'] },
-  { label: 'NAV', aliases: ['nav', 'net asset value'] },
+  { label: 'NAV', aliases: ['nav', 'net asset value', 'market value'] },
   { label: 'AUM', aliases: ['aum', 'assets under management'] },
   { label: 'Asset Allocation', aliases: ['asset allocation'] },
   { label: 'Commitment', aliases: ['commitment', 'commitments', 'committed'] },
