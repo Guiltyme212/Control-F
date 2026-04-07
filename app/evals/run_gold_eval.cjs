@@ -299,35 +299,59 @@ function buildFocusInstruction(query) {
 // ---------------------------------------------------------------------------
 // Claude API call
 // ---------------------------------------------------------------------------
-async function callClaude(base64, apiKey, query) {
+async function callClaude(base64, apiKey, query, retries = 2) {
   const startTime = Date.now();
   const userText = `Extract all financial metrics from this document.${buildFocusInstruction(query)}`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: CLAUDE_MODEL,
-      max_tokens: CLAUDE_MAX_TOKENS,
-      system: SYSTEM_PROMPT,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
-          { type: 'text', text: userText },
-        ],
-      }],
-    }),
-  });
+  let lastError;
+  let response;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      if (attempt > 0) {
+        const delay = attempt * 5000;
+        console.log(`  Retry ${attempt}/${retries} after ${delay / 1000}s cooldown...`);
+        await new Promise(r => setTimeout(r, delay));
+      }
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: CLAUDE_MODEL,
+          max_tokens: CLAUDE_MAX_TOKENS,
+          system: SYSTEM_PROMPT,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+              { type: 'text', text: userText },
+            ],
+          }],
+        }),
+      });
 
-  if (!response.ok) {
-    const err = await response.text().catch(() => '');
-    throw new Error(`Claude API ${response.status}: ${err.slice(0, 300)}`);
+      if (!response.ok) {
+        const err = await response.text().catch(() => '');
+        if (response.status === 429 && attempt < retries) {
+          console.log(`  Rate limited (429) — will retry`);
+          lastError = new Error(`Claude API 429: ${err.slice(0, 200)}`);
+          continue;
+        }
+        throw new Error(`Claude API ${response.status}: ${err.slice(0, 300)}`);
+      }
+      break; // success
+    } catch (err) {
+      lastError = err;
+      if (attempt < retries && (err.message === 'fetch failed' || err.message?.includes('ECONNRESET'))) {
+        continue; // transient network error — retry
+      }
+      throw err;
+    }
   }
+  if (!response || !response.ok) throw lastError || new Error('All retries failed');
 
   const data = await response.json();
   const elapsed = (Date.now() - startTime) / 1000;
