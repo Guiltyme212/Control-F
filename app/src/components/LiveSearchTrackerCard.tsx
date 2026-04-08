@@ -528,7 +528,7 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         setLiveTracker((current) =>
           current ? { ...current, message: 'Searching for sources...' } : current,
         );
-        const candidates = await discoverSourceCandidates(trackerQuery, trackerPensionFunds);
+        const candidates = await discoverSourceCandidates(trackerQuery, trackerPensionFunds, effectiveApiKey);
         if (cancelled) return;
 
         if (candidates.length === 0) {
@@ -591,16 +591,43 @@ export function LiveSearchTrackerCard({ onNavigate }: LiveSearchTrackerCardProps
         // Default to the top-ranked source; overridden after PDF selection
         let bestSource = topSources[0];
 
+        // Auto-retry with remaining candidates if first batch returned 0 PDFs
         if (allPdfs.length === 0) {
-          addLog('No PDFs found on any source page', 'error');
+          const remainingCandidates = candidates.slice(MAX_SOURCE_PAGES);
+          if (remainingCandidates.length > 0) {
+            addLog('No PDFs in first batch — trying additional sources...', 'info');
+            const retryScrapeResults = await Promise.all(
+              remainingCandidates.slice(0, MAX_SOURCE_PAGES).map(async (source) => {
+                try {
+                  const pdfs = await scrapeUrlForPdfs(source.url);
+                  addLog(`  ${source.label}: ${pdfs.length} PDFs`, 'done');
+                  return { source, pdfs };
+                } catch {
+                  addLog(`  ${source.label}: failed to scrape`, 'error');
+                  return { source, pdfs: [] as PdfCandidate[] };
+                }
+              }),
+            );
+            if (cancelled) return;
+            for (const { source, pdfs } of retryScrapeResults) {
+              sourceByLabel.set(source.label, source);
+              for (const pdf of pdfs) {
+                allPdfs.push({ url: pdf.url, filename: pdf.filename, sourceLabel: source.label });
+              }
+            }
+          }
+        }
+
+        if (allPdfs.length === 0) {
+          addLog('No PDFs found after trying all sources', 'error');
           setLiveTracker((current) =>
             current
               ? {
                   ...current,
                   sourceCandidates: candidates,
-                  status: 'choose_source',
-                  message: 'No PDFs found. Try selecting a different source below.',
-                  errorMessage: '',
+                  status: 'error',
+                  errorMessage: `No PDF documents found for "${trackerPensionFunds.join(', ')}". Try a more specific query or check the fund name.`,
+                  message: 'No PDF documents found.',
                 }
               : current,
           );

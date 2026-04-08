@@ -195,7 +195,7 @@ export interface ReviewedDocument {
   pagesReviewed?: number;
   previewPagesScanned?: number;
   totalPages?: number;
-  pageSubsetStrategy?: 'preview-only' | 'full-document' | 'first-chunk-fallback' | 'filtered-subset';
+  pageSubsetStrategy?: 'preview-only' | 'full-document' | 'first-chunk-fallback' | 'filtered-subset' | 'firecrawl-markdown';
   skipReason?: string;
   costUsd?: number;
   elapsedSec?: number;

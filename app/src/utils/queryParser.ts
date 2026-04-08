@@ -11,12 +11,23 @@ const ENTITY_ALIASES: Record<string, string> = {
   'minnesota sbi': 'Minnesota SBI',
   'mn sbi': 'Minnesota SBI',
   'msbi': 'Minnesota SBI',
+  'minnesota trs': 'Minnesota TRS',
+  'mn trs': 'Minnesota TRS',
   'samcera': 'SAMCERA',
   'isbi': 'ISBI',
   'illinois sbi': 'ISBI',
   'nm pera': 'NM PERA',
   'new mexico pera': 'NM PERA',
   'nmpera': 'NM PERA',
+  'calpers': 'CalPERS',
+  'cal pers': 'CalPERS',
+  'california pers': 'CalPERS',
+  'calstrs': 'CalSTRS',
+  'cal strs': 'CalSTRS',
+  'california strs': 'CalSTRS',
+  'texas trs': 'Texas TRS',
+  'ohio pers': 'Ohio PERS',
+  'opers': 'OPERS',
 };
 
 /* ------------------------------------------------------------------ */
@@ -55,8 +66,10 @@ function mapMetricLabel(label: string): string {
 const PENSION_SUFFIXES = [
   'TRS', 'PERS', 'PERA', 'SBI', 'STRS', 'ERS', 'CalPERS', 'CalSTRS',
   'OPERS', 'SERS', 'IPERS', 'MOSERS', 'KPERS', 'NHRS', 'MPERS',
-  'retirement system', 'pension fund', 'retirement board',
-  'investment board', 'teachers retirement',
+  'retirement system', 'retirement fund', 'pension fund', 'pension system',
+  'retirement board', 'retirement association',
+  'investment board', 'investment council',
+  'teachers retirement',
 ];
 
 const PENSION_SUFFIX_PATTERN = new RegExp(

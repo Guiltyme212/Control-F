@@ -722,6 +722,55 @@ export function detectSearchIntents(query: string): SearchIntent[] {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Haiku domain resolution for unknown pension funds                   */
+/* ------------------------------------------------------------------ */
+
+async function resolveOfficialDomain(
+  fundName: string,
+  apiKey: string,
+): Promise<string | null> {
+  try {
+    const response = await fetchWithTimeout(
+      'https://api.anthropic.com/v1/messages',
+      {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 60,
+          messages: [{
+            role: 'user',
+            content: `What is the official website domain for the US public pension fund called "${fundName}"? Return ONLY the bare domain (e.g., calpers.ca.gov, trs.texas.gov). No https://, no paths, no explanation.`,
+          }],
+        }),
+      },
+      15000,
+      'Haiku domain resolution timed out.',
+    );
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const text = data.content?.[0]?.text?.trim() || '';
+    // Extract domain: strip protocol, paths, whitespace
+    const domain = text.replace(/^https?:\/\//, '').replace(/\/.*$/, '').trim();
+
+    if (!domain || !domain.includes('.') || domain.includes(' ')) return null;
+
+    serverLog('HAIKU_DOMAIN_RESOLUTION', { fundName, domain });
+    return domain;
+  } catch {
+    serverLog('HAIKU_DOMAIN_RESOLUTION_FAILED', { fundName });
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Open web search fallback for unknown pension funds                  */
 /* ------------------------------------------------------------------ */
 
@@ -729,12 +778,22 @@ async function discoverViaWebSearch(
   query: string,
   fundName: string,
   intents: SearchIntent[],
+  apiKey?: string,
 ): Promise<SourceSearchCandidate[]> {
   const intentTerms = intents.flatMap((intent) => INTENT_KEYWORDS[intent]).slice(0, 4).join(' ');
-  // Use the original query for context, prefer .gov and .org domains
-  const searchQuery = `${query} ${fundName} ${intentTerms} site:.gov OR site:.org`;
 
-  serverLog('WEB_SEARCH_FALLBACK', { fundName, searchQuery });
+  // Step 1: Try Haiku domain resolution if API key available
+  let resolvedDomain: string | null = null;
+  if (apiKey) {
+    resolvedDomain = await resolveOfficialDomain(fundName, apiKey);
+  }
+
+  // Step 2: Build site-scoped search query (or fall back to broad search)
+  const searchQuery = resolvedDomain
+    ? `${fundName} ${intentTerms} PDF site:${resolvedDomain}`
+    : `${query} ${fundName} ${intentTerms} site:.gov OR site:.org`;
+
+  serverLog('WEB_SEARCH_FALLBACK', { fundName, searchQuery, resolvedDomain });
 
   const response = await fetchWithTimeout(
     'https://api.firecrawl.dev/v1/search',
@@ -802,29 +861,33 @@ async function discoverViaWebSearch(
 export async function discoverSourceCandidates(
   query: string,
   pensionFunds: string[] = [],
+  apiKey?: string,
 ): Promise<SourceSearchCandidate[]> {
   const intents = detectSearchIntents(query);
   const requestedMetrics = getRequestedMetricTypes(query);
   const familyPrefs = getDocumentFamilyPreferences(intents, requestedMetrics);
   const pensionFundFilter = new Set(pensionFunds.map((fund) => normalizeForSearch(fund)));
-  const eligibleEntries = sourceRegistry
-    .filter((entry) => pensionFundFilter.size === 0 || pensionFundFilter.has(normalizeForSearch(entry.pensionFund)))
-    .map((entry) => ({ entry, baseScore: scoreRegistryEntry(entry, query, intents) }))
-    .sort((a, b) => b.baseScore - a.baseScore)
-    .slice(0, SOURCE_SEARCH_FANOUT);
+  const eligibleEntries = pensionFundFilter.size > 0
+    ? sourceRegistry
+        .filter((entry) => pensionFundFilter.has(normalizeForSearch(entry.pensionFund)))
+        .map((entry) => ({ entry, baseScore: scoreRegistryEntry(entry, query, intents) }))
+        .sort((a, b) => b.baseScore - a.baseScore)
+        .slice(0, SOURCE_SEARCH_FANOUT)
+    : []; // No fund specified → skip registry, go to web search
 
   // If no registry entries match, fall back to open web search
-  if (eligibleEntries.length === 0 && pensionFunds.length > 0) {
-    serverLog('REGISTRY_MISS', { pensionFunds, fallback: 'web_search' });
+  if (eligibleEntries.length === 0) {
+    const fundNames = pensionFunds.length > 0 ? pensionFunds : [query];
+    serverLog('REGISTRY_MISS', { pensionFunds: fundNames, fallback: 'web_search' });
     const webResults = await Promise.all(
-      pensionFunds.map((fund) => discoverViaWebSearch(query, fund, intents).catch(() => [] as SourceSearchCandidate[])),
+      fundNames.map((fund) => discoverViaWebSearch(query, fund, intents, apiKey).catch(() => [] as SourceSearchCandidate[])),
     );
     const allResults = webResults.flat();
     if (allResults.length > 0) {
       return allResults.slice(0, 6);
     }
-    // If web search also fails, try without fund filter
-    const broadResults = await discoverViaWebSearch(query, pensionFunds[0], intents).catch(() => []);
+    // If web search also fails, try broader
+    const broadResults = await discoverViaWebSearch(query, fundNames[0], intents, apiKey).catch(() => []);
     return broadResults.slice(0, 3);
   }
 
@@ -869,11 +932,14 @@ export async function discoverSourceCandidates(
     return ranked.slice(0, 6);
   }
 
-  return sourceRegistry
-    .filter((entry) => pensionFundFilter.size === 0 || pensionFundFilter.has(normalizeForSearch(entry.pensionFund)))
-    .map((entry) => toFallbackCandidate(entry, scoreRegistryEntry(entry, query, intents)))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
+  if (pensionFundFilter.size > 0) {
+    return sourceRegistry
+      .filter((entry) => pensionFundFilter.has(normalizeForSearch(entry.pensionFund)))
+      .map((entry) => toFallbackCandidate(entry, scoreRegistryEntry(entry, query, intents)))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+  }
+  return [];
 }
 
 /* ------------------------------------------------------------------ */
@@ -1247,7 +1313,7 @@ export interface ExtractionResult {
   elapsedSec?: number;
   reviewedPageNumbers?: number[];
   totalPages?: number;
-  pageSubsetStrategy?: 'preview-only' | 'full-document' | 'first-chunk-fallback' | 'filtered-subset';
+  pageSubsetStrategy?: 'preview-only' | 'full-document' | 'first-chunk-fallback' | 'filtered-subset' | 'firecrawl-markdown';
   wasEarlyRejected?: boolean;
   skipReason?: string;
 }
@@ -1445,7 +1511,111 @@ export async function extractMetricsFromPdfUrl(
 
     // Step 1: Get PDF info (triggers server-side download + cache)
     log('Downloading and analyzing PDF...');
-    const info = await getPdfInfo(pdfUrl);
+    let info: { totalPages: number; chunkCount: number };
+    try {
+      info = await getPdfInfo(pdfUrl);
+    } catch (proxyError) {
+      // Proxy failed (e.g., 403 from bot-protected sites) — try Firecrawl
+      const proxyMsg = proxyError instanceof Error ? proxyError.message : String(proxyError);
+      log(`Direct download failed (${proxyMsg}) — trying Firecrawl...`, 'info');
+      serverLog('PDF_PROXY_FALLBACK_TO_FIRECRAWL', { pdfUrl, reason: proxyMsg });
+
+      try {
+        const fcResponse = await fetchWithTimeout(
+          'https://api.firecrawl.dev/v1/scrape',
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${getFirecrawlApiKey()}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              url: pdfUrl,
+              formats: ['markdown'],
+            }),
+          },
+          PDF_PROXY_TIMEOUT_MS * 2,
+          'Firecrawl PDF download timed out.',
+        );
+
+        if (!fcResponse.ok) {
+          throw new Error(`Firecrawl scrape failed (${fcResponse.status})`);
+        }
+
+        const fcData = await fcResponse.json();
+        if (!fcData.success) throw new Error(fcData.error || 'Firecrawl PDF scrape failed');
+
+        const markdown = fcData.data?.markdown || '';
+        if (!markdown || markdown.length < 50) {
+          throw new Error('Firecrawl returned empty PDF content');
+        }
+
+        // Firecrawl parsed the PDF into markdown — extract metrics from text directly
+        log('Firecrawl downloaded and parsed PDF successfully', 'done');
+        const totalPages = fcData.data?.metadata?.pageCount || 1;
+        log(`${totalPages} pages detected (via Firecrawl)`, 'done');
+
+        // Send the markdown text to Claude for extraction instead of PDF binary
+        const systemPrompt = getSystemPrompt(options.focusQuery);
+        const focusInstruction = buildFocusInstruction(options.focusQuery);
+        const userText = `Extract all financial metrics from this document text.\n${focusInstruction}\n\n${markdown}`;
+        const isFocused = systemPrompt !== SYSTEM_PROMPT_BROAD;
+        const maxTokens = isFocused ? 16000 : 32000;
+
+        const streamed = await callClaudeStreaming(apiKey, systemPrompt, [
+          { type: 'text', text: userText },
+        ], maxTokens, log);
+
+        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+        const costUsd = (streamed.inputTokens * 3 + streamed.outputTokens * 15) / 1_000_000;
+
+        serverLog('API_RESPONSE', {
+          function: 'extractViaFirecrawlMarkdown',
+          source: pdfFilename,
+          model: streamed.model,
+          inputTokens: streamed.inputTokens,
+          outputTokens: streamed.outputTokens,
+          costUsd: `$${costUsd.toFixed(4)}`,
+          elapsed: `${elapsed}s`,
+        });
+
+        if (!streamed.text) throw new Error('No text content in API response');
+        const parsed = parseOrSalvageJson(streamed.text);
+        const metrics: Metric[] = (parsed.extracted_metrics || []).map((am) => ({
+          date: am.date || '',
+          lp: am.lp_name || '',
+          fund: am.fund_name || '',
+          gp: am.gp_manager || '',
+          metric: am.metric_type || '',
+          value: am.value || '',
+          asset_class: am.asset_class || '',
+          source: pdfFilename,
+          page: am.page_reference ?? 0,
+          evidence: am.evidence_text || '',
+          confidence: am.confidence || 'medium',
+        }));
+
+        log(`Found ${metrics.length} metrics in ${elapsed}s (via Firecrawl)`, 'done');
+
+        return {
+          metrics,
+          signals: parsed.cross_reference_signals || [],
+          metadata: parsed.document_metadata || { source_organization: '', document_type: '', document_date: '', reporting_period: '' },
+          truncated: streamed.stopReason === 'max_tokens',
+          costUsd,
+          inputTokens: streamed.inputTokens,
+          outputTokens: streamed.outputTokens,
+          elapsedSec: parseFloat(elapsed),
+          reviewedPageNumbers: buildPageRange(1, totalPages),
+          totalPages,
+          pageSubsetStrategy: 'firecrawl-markdown',
+        };
+      } catch (fcError) {
+        const fcMsg = fcError instanceof Error ? fcError.message : String(fcError);
+        log(`Firecrawl fallback also failed: ${fcMsg}`, 'error');
+        throw new Error(`PDF processing failed: ${proxyMsg}`);
+      }
+    }
     log(`${info.totalPages} pages detected`, 'done');
     serverLog('PDF_INFO', {
       pdf: pdfFilename,

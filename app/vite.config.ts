@@ -15,7 +15,13 @@ async function fetchWithTimeout(url: string): Promise<Response> {
   const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_FETCH_TIMEOUT_MS)
 
   try {
-    return await fetch(url, { signal: controller.signal })
+    return await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'application/pdf,*/*',
+      },
+    })
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
       throw new Error(`Timed out after ${Math.round(UPSTREAM_FETCH_TIMEOUT_MS / 1000)}s while downloading the PDF`)

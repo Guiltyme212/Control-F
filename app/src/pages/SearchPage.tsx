@@ -787,7 +787,7 @@ export function SearchPage({ onSearchComplete }: SearchPageProps) {
                         {/* CTA */}
                         <motion.button
                           onClick={handleStartTracking}
-                          disabled={refineEntities.length === 0 || refineMetrics.length === 0}
+                          disabled={refineMetrics.length === 0}
                           whileHover={{ scale: 1.01 }}
                           whileTap={{ scale: 0.99 }}
                           className="w-full py-3 rounded-xl bg-accent text-white font-semibold text-sm hover:bg-accent-light transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"

@@ -4,9 +4,9 @@ React SPA for `controlf.ai` — pension-fund document intelligence. Real extract
 
 ## Current Status (update after major work sessions)
 
-**Phase:** Pipeline accuracy hardening. Core pipeline + accuracy layer both working.
-**Last completed:** Document-family hard routing, mandatory preview scoring, auto-retry on partial match, asset-class-aware coverage scoring, proxy metric detection, provenance fix, page-window selection, answer summary block, completeness labels, benchmark suite.
-**Next up:** Answer summarization quality, page-window completeness for large docs. See memory file `project_current_priorities.md` for the full ranked list.
+**Phase:** Any-fund pipeline + demo prep. Core pipeline works for any US pension fund, not just hardcoded ones.
+**Last completed:** Haiku domain resolution for unknown funds, Firecrawl 403-fallback for bot-protected sites, streaming Claude extraction, auto-retry on 0 PDFs, generic fund name extraction, always-clickable search button.
+**Next up:** Date-range-aware PDF selection, extraction speed optimization. See memory file `project_current_priorities.md` for the full ranked list.
 
 ## Core User
 
@@ -25,17 +25,20 @@ Sarah — fund-of-funds analyst. Every decision follows:
 ## The Pipeline
 
 ```
-Query → searchFocus.ts (metric types + keywords + asset-class hints)
-  → sourceRegistry.ts (match to approved fund URLs)
+Query → queryParser.ts (entity + metric + asset-class extraction)
+  → Known fund? sourceRegistry.ts (curated URLs)
+  → Unknown fund? Haiku resolves domain → Firecrawl site-scoped search
   → getDocumentFamilyPreferences() hard-routes by query type
   → discoverSourceCandidates() scores + promotes preferred families
   → Firecrawl scrapes top 3 source pages for PDFs
+  → If 0 PDFs: auto-retry remaining sources (never ask user to choose)
   → Preview scoring: pages 1-3 of top 5 PDFs scored locally
-  → selectBestPdfWithLLM() with enriched preview data
+  → selectBestPdfWithLLM() with enriched preview data (Haiku)
   → PDF proxied via Vite middleware
-  → Small PDF: direct to Claude | Large PDF: page-window scored, subsetted, then to Claude
-  → Claude returns Metric[] JSON (focus instruction narrows extraction)
-  → computeCoverageScore() checks requested vs found (asset-class-aware, proxy-aware)
+  → If proxy 403: Firecrawl scrape fallback (bypasses bot protection)
+  → Small PDF: direct to Claude | Large PDF: page-window scored, subsetted
+  → Claude Sonnet streaming extraction → Metric[] JSON
+  → computeCoverageScore() checks requested vs found
   → If partial: auto-retry with next-best PDF, merge + deduplicate
   → liveResultAssessment.ts evaluates match quality + completeness label
   → Results with answer summary block + evidence panel
@@ -77,7 +80,9 @@ No test framework beyond `benchmark.ts`. No real backend — Vite middleware pro
 - Build passing != UX works (no browser harness)
 - Some dashboard cards are intentionally hardcoded
 - Large PDFs can be expensive if wrong file gets extracted
-- Working sites: PSERS, Minnesota SBI, SAMCERA. Broken: ISBI, NM PERA
+- Any US pension fund works via Haiku domain resolution + Firecrawl
+- Known registry funds: PSERS, Minnesota SBI, SAMCERA, ISBI, NM PERA
+- Bot-protected sites (403): auto-fallback to Firecrawl scrape
 - Root docs are git-tracked — careful creating files at repo root
 
 ## References
