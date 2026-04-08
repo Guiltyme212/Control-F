@@ -24,6 +24,34 @@ const FIRECRAWL_TIMEOUT_MS = 25000;
 const SCRAPE_TIMEOUT_MS = 30000;
 const PDF_PROXY_TIMEOUT_MS = 45000;
 const CLAUDE_TIMEOUT_MS = 300000;
+const CLAUDE_MAX_RETRIES = 2;
+const CLAUDE_RETRY_DELAYS = [5000, 10000]; // 5s, 10s backoff
+
+async function fetchWithRetry(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+  timeoutMessage: string,
+  log?: (message: string, status?: 'info' | 'done' | 'error') => void,
+): Promise<Response> {
+  for (let attempt = 0; attempt <= CLAUDE_MAX_RETRIES; attempt++) {
+    try {
+      return await fetchWithTimeout(input, init, timeoutMs, timeoutMessage);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const isTransient = /failed to fetch|fetch failed|network|econnreset|socket/i.test(msg);
+      const isRateLimit = msg.includes('429') || msg.toLowerCase().includes('rate limit');
+      if ((isTransient || isRateLimit) && attempt < CLAUDE_MAX_RETRIES) {
+        const delay = CLAUDE_RETRY_DELAYS[attempt] ?? 10000;
+        log?.(`Network error (${msg}), retrying in ${delay / 1000}s (attempt ${attempt + 2}/${CLAUDE_MAX_RETRIES + 1})...`, 'info');
+        await new Promise((resolve) => globalThis.setTimeout(resolve, delay));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error(timeoutMessage); // unreachable but satisfies TS
+}
 
 export type ScrapedPdfLink = PdfLink;
 
@@ -191,6 +219,106 @@ interface FirecrawlSearchItem {
   title?: string;
   description?: string;
   url: string;
+}
+
+interface StreamedClaudeResponse {
+  text: string;
+  model: string;
+  stopReason: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+async function callClaudeStreaming(
+  apiKey: string,
+  systemPrompt: string,
+  userContent: Array<Record<string, unknown>>,
+  maxTokens: number,
+  log?: (message: string, status?: 'info' | 'done' | 'error') => void,
+): Promise<StreamedClaudeResponse> {
+  const response = await fetchWithRetry(
+    'https://api.anthropic.com/v1/messages',
+    {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: maxTokens,
+        stream: true,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userContent }],
+      }),
+    },
+    CLAUDE_TIMEOUT_MS,
+    'Claude extraction timed out before returning a result.',
+    log,
+  );
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
+    if (response.status === 401) {
+      throw new Error('Invalid API key. Please check your Anthropic API key in settings.');
+    }
+    if (response.status === 429) {
+      throw new Error('Rate limit exceeded. Please wait a moment and try again.');
+    }
+    if (errorBody.includes('100 PDF pages')) {
+      throw new Error('PDF too large (over 100 pages).');
+    }
+    throw new Error(`API error (${response.status}): ${errorBody || response.statusText}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('No response body from streaming API');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let text = '';
+  let model = '';
+  let stopReason = '';
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const jsonStr = line.slice(6).trim();
+      if (jsonStr === '[DONE]' || !jsonStr) continue;
+
+      try {
+        const event = JSON.parse(jsonStr);
+        if (event.type === 'message_start' && event.message) {
+          model = event.message.model || '';
+          if (event.message.usage) {
+            inputTokens = event.message.usage.input_tokens || 0;
+          }
+        } else if (event.type === 'content_block_delta' && event.delta?.text) {
+          text += event.delta.text;
+        } else if (event.type === 'message_delta') {
+          stopReason = event.delta?.stop_reason || stopReason;
+          if (event.usage) {
+            outputTokens = event.usage.output_tokens || 0;
+          }
+        }
+      } catch {
+        // skip malformed SSE lines
+      }
+    }
+  }
+
+  return { text, model, stopReason, inputTokens, outputTokens };
 }
 
 interface ExtractionOptions {
@@ -593,6 +721,84 @@ export function detectSearchIntents(query: string): SearchIntent[] {
   return intents.length > 0 ? intents : ['general'];
 }
 
+/* ------------------------------------------------------------------ */
+/*  Open web search fallback for unknown pension funds                  */
+/* ------------------------------------------------------------------ */
+
+async function discoverViaWebSearch(
+  query: string,
+  fundName: string,
+  intents: SearchIntent[],
+): Promise<SourceSearchCandidate[]> {
+  const intentTerms = intents.flatMap((intent) => INTENT_KEYWORDS[intent]).slice(0, 4).join(' ');
+  // Use the original query for context, prefer .gov and .org domains
+  const searchQuery = `${query} ${fundName} ${intentTerms} site:.gov OR site:.org`;
+
+  serverLog('WEB_SEARCH_FALLBACK', { fundName, searchQuery });
+
+  const response = await fetchWithTimeout(
+    'https://api.firecrawl.dev/v1/search',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${getFirecrawlApiKey()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query: searchQuery,
+        limit: 5,
+        timeout: FIRECRAWL_TIMEOUT_MS,
+      }),
+    },
+    FIRECRAWL_TIMEOUT_MS,
+    'Web search timed out.',
+  );
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
+    throw new Error(`Web search failed (${response.status}): ${errorBody || response.statusText}`);
+  }
+
+  const data = await response.json();
+  if (!data.success || !data.data?.length) return [];
+
+  const results: SourceSearchCandidate[] = (data.data as FirecrawlSearchItem[]).map((item, idx) => {
+    const title = item.title || item.url;
+    const desc = item.description || '';
+    const combined = normalizeForSearch(`${title} ${desc} ${item.url}`);
+    let score = 50 - idx * 5; // base score by rank
+
+    // Boost .gov and .org
+    if (/\.gov\b/.test(item.url)) score += 20;
+    if (/\.org\b/.test(item.url)) score += 10;
+
+    // Boost pages mentioning investment-relevant terms
+    if (textIncludesAny(combined, ['investment', 'portfolio', 'performance', 'private markets', 'private equity'])) score += 15;
+    if (textIncludesAny(combined, ['board', 'meeting', 'committee', 'agenda'])) score += 10;
+    if (textIncludesAny(combined, ['commitment', 'commitments', 'approved'])) score += 10;
+    if (textIncludesAny(combined, ['annual report', 'quarterly', 'disclosure'])) score += 8;
+
+    // Penalize clearly wrong pages
+    if (textIncludesAny(combined, ['careers', 'job posting', 'faq', 'contact us', 'login'])) score -= 30;
+
+    return {
+      id: `web-${idx}`,
+      registryId: `web-${idx}`,
+      pensionFund: fundName,
+      label: title,
+      url: item.url,
+      description: desc,
+      score,
+      matchedKeywords: [],
+      documentType: 'general' as const,
+    };
+  });
+
+  return results
+    .filter((c) => c.score > 0)
+    .sort((a, b) => b.score - a.score);
+}
+
 export async function discoverSourceCandidates(
   query: string,
   pensionFunds: string[] = [],
@@ -606,6 +812,21 @@ export async function discoverSourceCandidates(
     .map((entry) => ({ entry, baseScore: scoreRegistryEntry(entry, query, intents) }))
     .sort((a, b) => b.baseScore - a.baseScore)
     .slice(0, SOURCE_SEARCH_FANOUT);
+
+  // If no registry entries match, fall back to open web search
+  if (eligibleEntries.length === 0 && pensionFunds.length > 0) {
+    serverLog('REGISTRY_MISS', { pensionFunds, fallback: 'web_search' });
+    const webResults = await Promise.all(
+      pensionFunds.map((fund) => discoverViaWebSearch(query, fund, intents).catch(() => [] as SourceSearchCandidate[])),
+    );
+    const allResults = webResults.flat();
+    if (allResults.length > 0) {
+      return allResults.slice(0, 6);
+    }
+    // If web search also fails, try without fund filter
+    const broadResults = await discoverViaWebSearch(query, pensionFunds[0], intents).catch(() => []);
+    return broadResults.slice(0, 3);
+  }
 
   // Hard-route: if top entry is penalized but a preferred entry exists, promote it
   if (familyPrefs.preferred.size > 0 && eligibleEntries.length > 1) {
@@ -782,6 +1003,7 @@ async function extractChunk(
   pageOffset: number,
   totalPages: number,
   options: ExtractionOptions = {},
+  log?: (message: string, status?: 'info' | 'done' | 'error') => void,
 ): Promise<ExtractionResult> {
   const startTime = Date.now();
   const pdfSizeKB = Math.round((base64.length * 3) / 4 / 1024);
@@ -804,104 +1026,39 @@ async function extractChunk(
     maxTokens,
   });
 
-  const response = await fetchWithTimeout(
-    'https://api.anthropic.com/v1/messages',
-    {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: maxTokens,
-        system: systemPrompt,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'document',
-                source: {
-                  type: 'base64',
-                  media_type: 'application/pdf',
-                  data: base64,
-                },
-              },
-              { type: 'text', text: focusedUserText },
-            ],
-          },
-        ],
-      }),
-    },
-    CLAUDE_TIMEOUT_MS,
-    'Claude extraction timed out before returning a result.',
-  );
+  const userContent = [
+    { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+    { type: 'text', text: focusedUserText },
+  ];
 
-  if (!response.ok) {
-    const errorBody = await response.text().catch(() => '');
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    serverLog('API_ERROR', {
-      function: 'extractChunk',
-      source: sourceName,
-      status: response.status,
-      elapsed: `${elapsed}s`,
-      error: errorBody.slice(0, 500),
-    });
-    if (response.status === 401) {
-      throw new Error('Invalid API key. Please check your Anthropic API key in settings.');
-    }
-    if (response.status === 429) {
-      throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-    }
-    if (errorBody.includes('100 PDF pages')) {
-      throw new Error('PDF too large (over 100 pages). This document has a complex structure that prevents automatic splitting.');
-    }
-    throw new Error(`API error (${response.status}): ${errorBody || response.statusText}`);
-  }
-
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error('API returned invalid JSON response.');
-  }
+  const streamed = await callClaudeStreaming(apiKey, systemPrompt, userContent, maxTokens, log);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  const usage = data.usage || {};
-  const inputTokens = usage.input_tokens || 0;
-  const outputTokens = usage.output_tokens || 0;
-  // Sonnet pricing: $3/M input, $15/M output
+  const { inputTokens, outputTokens } = streamed;
   const costUsd = (inputTokens * 3 + outputTokens * 15) / 1_000_000;
 
   serverLog('API_RESPONSE', {
     function: 'extractChunk',
     source: sourceName,
-    model: data.model || 'unknown',
-    stopReason: data.stop_reason || 'unknown',
+    model: streamed.model || 'unknown',
+    stopReason: streamed.stopReason || 'unknown',
     inputTokens,
     outputTokens,
     costUsd: `$${costUsd.toFixed(4)}`,
     elapsed: `${elapsed}s`,
-    responseChars: data.content?.[0]?.text?.length || 0,
+    responseChars: streamed.text.length,
   });
 
-  const textBlock = data.content?.find(
-    (block: { type: string }) => block.type === 'text'
-  );
-  if (!textBlock?.text) {
+  if (!streamed.text) {
     throw new Error('No text content in API response');
   }
 
-  const parsed = parseOrSalvageJson(textBlock.text);
+  const parsed = parseOrSalvageJson(streamed.text);
 
-  // Log raw response when extraction returns zero metrics for debugging
   if (!parsed.extracted_metrics?.length) {
     serverLog('EXTRACTION_EMPTY', {
       source: sourceName,
-      rawResponsePreview: textBlock.text.slice(0, 500),
+      rawResponsePreview: streamed.text.slice(0, 500),
     });
   }
 
@@ -919,7 +1076,7 @@ async function extractChunk(
     confidence: am.confidence || 'medium',
   }));
 
-  const wasTruncated = data.stop_reason === 'max_tokens';
+  const wasTruncated = streamed.stopReason === 'max_tokens';
 
   serverLog('EXTRACTION_RESULT', {
     source: sourceName,
@@ -952,6 +1109,7 @@ async function extractChunkWithPageMap(
   originalPageNumbers: number[],
   totalPages: number,
   options: ExtractionOptions = {},
+  log?: (message: string, status?: 'info' | 'done' | 'error') => void,
 ): Promise<ExtractionResult> {
   const startTime = Date.now();
   const pdfSizeKB = Math.round((base64.length * 3) / 4 / 1024);
@@ -975,88 +1133,37 @@ async function extractChunkWithPageMap(
     maxTokens,
   });
 
-  const response = await fetchWithTimeout(
-    'https://api.anthropic.com/v1/messages',
-    {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: maxTokens,
-        system: systemPrompt,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'document',
-                source: { type: 'base64', media_type: 'application/pdf', data: base64 },
-              },
-              { type: 'text', text: focusedUserText },
-            ],
-          },
-        ],
-      }),
-    },
-    CLAUDE_TIMEOUT_MS,
-    'Claude extraction timed out before returning a result.',
-  );
+  const userContent = [
+    { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+    { type: 'text', text: focusedUserText },
+  ];
 
-  if (!response.ok) {
-    const errorBody = await response.text().catch(() => '');
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    serverLog('API_ERROR', {
-      function: 'extractChunkWithPageMap',
-      source: sourceName,
-      status: response.status,
-      elapsed: `${elapsed}s`,
-      error: errorBody.slice(0, 500),
-    });
-    if (response.status === 401) {
-      throw new Error('Invalid API key. Please check your Anthropic API key in settings.');
-    }
-    if (response.status === 429) {
-      throw new Error('Rate limit exceeded. Please wait a moment and try again.');
-    }
-    throw new Error(`API error (${response.status}): ${errorBody || response.statusText}`);
-  }
-
-  let data;
-  try { data = await response.json(); } catch { throw new Error('API returned invalid JSON response.'); }
+  const streamed = await callClaudeStreaming(apiKey, systemPrompt, userContent, maxTokens, log);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  const usage = data.usage || {};
-  const inputTokens = usage.input_tokens || 0;
-  const outputTokens = usage.output_tokens || 0;
+  const { inputTokens, outputTokens } = streamed;
   const costUsd = (inputTokens * 3 + outputTokens * 15) / 1_000_000;
 
   serverLog('API_RESPONSE', {
     function: 'extractChunkWithPageMap',
     source: sourceName,
-    model: data.model || 'unknown',
-    stopReason: data.stop_reason || 'unknown',
+    model: streamed.model || 'unknown',
+    stopReason: streamed.stopReason || 'unknown',
     inputTokens,
     outputTokens,
     costUsd: `$${costUsd.toFixed(4)}`,
     elapsed: `${elapsed}s`,
-    responseChars: data.content?.[0]?.text?.length || 0,
+    responseChars: streamed.text.length,
   });
 
-  const textBlock = data.content?.find((block: { type: string }) => block.type === 'text');
-  if (!textBlock?.text) throw new Error('No text content in API response');
+  if (!streamed.text) throw new Error('No text content in API response');
 
-  const parsed = parseOrSalvageJson(textBlock.text);
+  const parsed = parseOrSalvageJson(streamed.text);
 
-  // Log raw response when extraction returns zero metrics for debugging
   if (!parsed.extracted_metrics?.length) {
     serverLog('EXTRACTION_EMPTY', {
       source: sourceName,
-      rawResponsePreview: textBlock.text.slice(0, 800),
+      rawResponsePreview: streamed.text.slice(0, 800),
     });
   }
 
@@ -1074,7 +1181,7 @@ async function extractChunkWithPageMap(
     confidence: am.confidence || 'medium',
   }));
 
-  const wasTruncated = data.stop_reason === 'max_tokens';
+  const wasTruncated = streamed.stopReason === 'max_tokens';
 
   serverLog('EXTRACTION_RESULT', {
     source: sourceName,
@@ -1452,7 +1559,7 @@ export async function extractMetricsFromPdfUrl(
       log('Small document — sending directly to Claude...');
       const base64 = await fetchPdfChunk(pdfUrl, 0);
       log('Extracting financial metrics...', 'info');
-      const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, effectiveOptions);
+      const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, effectiveOptions, log);
       log(`Found ${result.metrics.length} metrics in ${result.elapsedSec?.toFixed(1) ?? '?'}s — ${result.inputTokens ?? 0} in / ${result.outputTokens ?? 0} out tokens ($${result.costUsd?.toFixed(3) ?? '?'})`, 'done');
       return {
         ...result,
@@ -1494,7 +1601,7 @@ export async function extractMetricsFromPdfUrl(
         reason: 'no keyword hits',
       });
       const base64 = await fetchPdfChunk(pdfUrl, 0);
-      const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, effectiveOptions);
+      const result = await extractChunk(base64, apiKey, pdfFilename, 0, info.totalPages, effectiveOptions, log);
       log(`Extracted ${result.metrics.length} metrics in ${result.elapsedSec?.toFixed(1) ?? '?'}s — ${result.inputTokens ?? 0} in / ${result.outputTokens ?? 0} out tokens ($${result.costUsd?.toFixed(3) ?? '?'})`, 'done');
       return {
         ...result,
@@ -1533,7 +1640,7 @@ export async function extractMetricsFromPdfUrl(
 
     log('Sending to Claude for extraction...');
     const result = await extractChunkWithPageMap(
-      subsetBase64, apiKey, pdfFilename, relevantPages, info.totalPages, effectiveOptions,
+      subsetBase64, apiKey, pdfFilename, relevantPages, info.totalPages, effectiveOptions, log,
     );
     log(`Extracted ${result.metrics.length} metrics in ${result.elapsedSec?.toFixed(1) ?? '?'}s — ${result.inputTokens ?? 0} in / ${result.outputTokens ?? 0} out tokens ($${result.costUsd?.toFixed(3) ?? '?'})`, 'done');
 

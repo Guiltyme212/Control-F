@@ -48,6 +48,41 @@ function mapMetricLabel(label: string): string {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Generic pension fund name extraction                               */
+/* ------------------------------------------------------------------ */
+
+// Common pension fund suffixes/acronyms
+const PENSION_SUFFIXES = [
+  'TRS', 'PERS', 'PERA', 'SBI', 'STRS', 'ERS', 'CalPERS', 'CalSTRS',
+  'OPERS', 'SERS', 'IPERS', 'MOSERS', 'KPERS', 'NHRS', 'MPERS',
+  'retirement system', 'pension fund', 'retirement board',
+  'investment board', 'teachers retirement',
+];
+
+const PENSION_SUFFIX_PATTERN = new RegExp(
+  `((?:[A-Z][a-zA-Z]+\\s+)+(?:${PENSION_SUFFIXES.join('|')})\\b)` +
+  `|\\b((?:${PENSION_SUFFIXES.join('|')})\\b)`,
+  'gi',
+);
+
+function extractGenericFundName(query: string): string | null {
+  // Try "X TRS/PERS/etc" patterns
+  const matches = query.match(PENSION_SUFFIX_PATTERN);
+  if (matches && matches.length > 0) {
+    return matches[0].trim();
+  }
+
+  // Try standalone well-known names with state context
+  const statePattern = /\b((?:Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New\s+Hampshire|New\s+Jersey|New\s+Mexico|New\s+York|North\s+Carolina|North\s+Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode\s+Island|South\s+Carolina|South\s+Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West\s+Virginia|Wisconsin|Wyoming))\s+(TRS|PERS|PERA|SBI|STRS|ERS|retirement|pension|investment)\b/i;
+  const stateMatch = query.match(statePattern);
+  if (stateMatch) {
+    return stateMatch[0].trim();
+  }
+
+  return null;
+}
+
+/* ------------------------------------------------------------------ */
 /*  parseQueryConfig                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -71,6 +106,13 @@ export function parseQueryConfig(query: string): {
   for (const name of pensionFundNames) {
     if (q.includes(name.toLowerCase())) {
       matchedEntities.add(name);
+    }
+  }
+  // Fallback: extract any pension-fund-like name from the query
+  if (matchedEntities.size === 0) {
+    const generic = extractGenericFundName(query);
+    if (generic) {
+      matchedEntities.add(generic);
     }
   }
   const entities = Array.from(matchedEntities);

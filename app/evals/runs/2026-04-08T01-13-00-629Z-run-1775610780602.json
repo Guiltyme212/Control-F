@@ -1,0 +1,673 @@
+{
+  "id": "run-1775610780602",
+  "timestamp": "2026-04-08T01:13:00.602Z",
+  "query": "PSERS private markets IRR, TVPI, DPI, and NAV",
+  "fund": "PSERS",
+  "selected_source": {
+    "label": "Asset Allocation and Performance",
+    "document_type": "performance",
+    "url": "https://www.pa.gov/agencies/psers/transparency/investment-program/psers-asset-allocation-and-performance",
+    "score": 102,
+    "matched_keywords": [
+      "private markets",
+      "portfolio quarterly",
+      "disclosure report",
+      "combined portfolio",
+      "performance",
+      "irr"
+    ]
+  },
+  "selected_pdf": {
+    "filename": "psers portfolio quarterly public disclosure report q3-25.pdf",
+    "source_label": "Asset Allocation and Performance",
+    "preview_score": null,
+    "preview_negative_signals": []
+  },
+  "retry_pdf": null,
+  "selected_pdfs": [
+    {
+      "url": "https://www.pa.gov/content/dam/copapwp-pagov/en/psers/documents/transparency/investment/fy-2025-26/psers%20portfolio%20quarterly%20public%20disclosure%20report%20q3-25.pdf",
+      "filename": "psers portfolio quarterly public disclosure report q3-25.pdf",
+      "sourceLabel": "Asset Allocation and Performance",
+      "status": "extracted",
+      "selectionRole": "selected",
+      "selectionReason": "initial selection",
+      "previewScore": null,
+      "previewNegativeSignals": [],
+      "sourceUrl": "https://www.pa.gov/agencies/psers/transparency/investment-program/psers-asset-allocation-and-performance",
+      "previewMatchedMetrics": [],
+      "pagesReviewed": 8,
+      "reviewedPages": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "totalPages": 35,
+      "pageSubsetStrategy": "filtered-subset",
+      "costUsd": 0.219204,
+      "elapsedSec": 101
+    }
+  ],
+  "skipped_pdfs": [],
+  "reviewed_scope": "1 PDF reviewed",
+  "reviewed_pages": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "total_pages": 35,
+  "source_candidates": [
+    {
+      "label": "Asset Allocation and Performance",
+      "url": "https://www.pa.gov/agencies/psers/transparency/investment-program/psers-asset-allocation-and-performance",
+      "documentType": "performance",
+      "score": 102,
+      "matchedKeywords": [
+        "private markets",
+        "portfolio quarterly",
+        "disclosure report",
+        "combined portfolio",
+        "performance",
+        "irr"
+      ]
+    },
+    {
+      "label": "Financial Reports",
+      "url": "https://www.pa.gov/agencies/psers/transparency/financial-reports",
+      "documentType": "financial",
+      "score": 41,
+      "matchedKeywords": [
+        "financial reports",
+        "acfr",
+        "annual report",
+        "total fund",
+        "net position",
+        "performance"
+      ]
+    },
+    {
+      "label": "Board of Trustees Meetings",
+      "url": "https://www.pa.gov/agencies/psers/board-of-trustees/board-of-trustees-meetings",
+      "documentType": "meeting",
+      "score": 32,
+      "matchedKeywords": [
+        "board meetings",
+        "agenda",
+        "minutes",
+        "investment committee",
+        "board materials",
+        "irr"
+      ]
+    }
+  ],
+  "metrics": [
+    {
+      "metric": "NAV",
+      "asset_class": "Total Private Markets",
+      "value": "26,019.9",
+      "page": 2,
+      "evidence": "PSERS Total Private Markets NAV ($M) 26,019.9",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Total Private Markets",
+      "value": "10.0%",
+      "page": 2,
+      "evidence": "PSERS Total Private Markets ITD Net IRR 10.0%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Total Private Markets",
+      "value": "1.5x",
+      "page": 2,
+      "evidence": "PSERS Total Private Markets TVPI 1.5x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Equity",
+      "value": "10,064.3",
+      "page": 2,
+      "evidence": "Private Equity NAV ($M) 10,064.3",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Equity",
+      "value": "11.6%",
+      "page": 2,
+      "evidence": "Private Equity ITD Net IRR 11.6%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Equity",
+      "value": "1.6x",
+      "page": 2,
+      "evidence": "Private Equity TVPI 1.6x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Real Estate",
+      "value": "5,974.4",
+      "page": 2,
+      "evidence": "Private Real Estate NAV ($M) 5,974.4",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Real Estate",
+      "value": "8.6%",
+      "page": 2,
+      "evidence": "Private Real Estate ITD Net IRR 8.6%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Real Estate",
+      "value": "1.5x",
+      "page": 2,
+      "evidence": "Private Real Estate TVPI 1.5x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Credit",
+      "value": "5,850.3",
+      "page": 2,
+      "evidence": "Private Credit NAV ($M) 5,850.3",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Credit",
+      "value": "8.5%",
+      "page": 2,
+      "evidence": "Private Credit ITD Net IRR 8.5%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Credit",
+      "value": "1.3x",
+      "page": 2,
+      "evidence": "Private Credit TVPI 1.3x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Infrastructure",
+      "value": "3,826.1",
+      "page": 2,
+      "evidence": "Private Infrastructure NAV ($M) 3,826.1",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Infrastructure",
+      "value": "16.4%",
+      "page": 2,
+      "evidence": "Private Infrastructure ITD Net IRR 16.4%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Infrastructure",
+      "value": "1.5x",
+      "page": 2,
+      "evidence": "Private Infrastructure TVPI 1.5x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Total Private Markets",
+      "value": "2,477.1",
+      "page": 2,
+      "evidence": "PSERS Total Private Markets Co-Investments NAV 2,477.1",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Total Private Markets",
+      "value": "16.2%",
+      "page": 2,
+      "evidence": "PSERS Total Private Markets Co-Investments ITD Net IRR 16.2%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Total Private Markets",
+      "value": "1.7x",
+      "page": 2,
+      "evidence": "PSERS Total Private Markets Co-Investments TVPI 1.7x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Equity",
+      "value": "1,141.3",
+      "page": 2,
+      "evidence": "Private Equity Co-Investments NAV ($M) 1,141.3",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Equity",
+      "value": "18.1%",
+      "page": 2,
+      "evidence": "Private Equity Co-Investments ITD Net IRR 18.1%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Equity",
+      "value": "1.9x",
+      "page": 2,
+      "evidence": "Private Equity Co-Investments TVPI 1.9x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Real Estate",
+      "value": "187.6",
+      "page": 2,
+      "evidence": "Private Real Estate Co-Investments NAV ($M) 187.6",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Real Estate",
+      "value": "11.1%",
+      "page": 2,
+      "evidence": "Private Real Estate Co-Investments ITD Net IRR 11.1%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Real Estate",
+      "value": "1.2x",
+      "page": 2,
+      "evidence": "Private Real Estate Co-Investments TVPI 1.2x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Credit",
+      "value": "212.5",
+      "page": 2,
+      "evidence": "Private Credit Co-Investments NAV ($M) 212.5",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Credit",
+      "value": "8.5%",
+      "page": 2,
+      "evidence": "Private Credit Co-Investments ITD Net IRR 8.5%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Credit",
+      "value": "1.3x",
+      "page": 2,
+      "evidence": "Private Credit Co-Investments TVPI 1.3x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Infrastructure",
+      "value": "906.0",
+      "page": 2,
+      "evidence": "Private Infrastructure Co-Investments NAV ($M) 906.0",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Infrastructure",
+      "value": "19.2%",
+      "page": 2,
+      "evidence": "Private Infrastructure Co-Investments ITD Net IRR 19.2%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Infrastructure",
+      "value": "1.6x",
+      "page": 2,
+      "evidence": "Private Infrastructure Co-Investments TVPI 1.6x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Equity",
+      "value": "5,230.2",
+      "page": 4,
+      "evidence": "Buyout NAV ($M) 5,230.2",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Equity",
+      "value": "12.8%",
+      "page": 4,
+      "evidence": "Buyout ITD Net IRR 12.8%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Equity",
+      "value": "1.6x",
+      "page": 4,
+      "evidence": "Buyout TVPI 1.6x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Equity",
+      "value": "2,462.5",
+      "page": 4,
+      "evidence": "Growth Equity NAV ($M) 2,462.5",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Equity",
+      "value": "12.8%",
+      "page": 4,
+      "evidence": "Growth Equity ITD Net IRR 12.8%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Equity",
+      "value": "1.9x",
+      "page": 4,
+      "evidence": "Growth Equity TVPI 1.9x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Equity",
+      "value": "1,498.8",
+      "page": 4,
+      "evidence": "PE Special Situations NAV ($M) 1,498.8",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Equity",
+      "value": "6.5%",
+      "page": 4,
+      "evidence": "PE Special Situations ITD Net IRR 6.5%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Equity",
+      "value": "1.3x",
+      "page": 4,
+      "evidence": "PE Special Situations TVPI 1.3x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Equity",
+      "value": "872.9",
+      "page": 4,
+      "evidence": "Venture Capital NAV ($M) 872.9",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Equity",
+      "value": "6.1%",
+      "page": 4,
+      "evidence": "Venture Capital ITD Net IRR 6.1%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Equity",
+      "value": "1.4x",
+      "page": 4,
+      "evidence": "Venture Capital TVPI 1.4x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Real Estate",
+      "value": "2,954.4",
+      "page": 6,
+      "evidence": "Value-Add NAV ($M) 2,954.4",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Real Estate",
+      "value": "9.4%",
+      "page": 6,
+      "evidence": "Value-Add ITD Net IRR 9.4%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Real Estate",
+      "value": "1.5x",
+      "page": 6,
+      "evidence": "Value-Add TVPI 1.5x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Real Estate",
+      "value": "2,156.0",
+      "page": 6,
+      "evidence": "Opportunistic NAV ($M) 2,156.0",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Real Estate",
+      "value": "8.9%",
+      "page": 6,
+      "evidence": "Opportunistic ITD Net IRR 8.9%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Real Estate",
+      "value": "1.4x",
+      "page": 6,
+      "evidence": "Opportunistic TVPI 1.4x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Real Estate",
+      "value": "864.1",
+      "page": 6,
+      "evidence": "Core NAV ($M) 864.1",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Real Estate",
+      "value": "8.1%",
+      "page": 6,
+      "evidence": "Core ITD Net IRR 8.1%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Real Estate",
+      "value": "1.5x",
+      "page": 6,
+      "evidence": "Core TVPI 1.5x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Credit",
+      "value": "2,082.1",
+      "page": 8,
+      "evidence": "Distressed Debt & Special Situations NAV ($M) 2,082.1",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Credit",
+      "value": "8.2%",
+      "page": 8,
+      "evidence": "Distressed Debt & Special Situations ITD Net IRR 8.2%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Credit",
+      "value": "1.3x",
+      "page": 8,
+      "evidence": "Distressed Debt & Special Situations TVPI 1.3x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Credit",
+      "value": "1,929.0",
+      "page": 8,
+      "evidence": "Direct Lending NAV ($M) 1,929.0",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Credit",
+      "value": "9.7%",
+      "page": 8,
+      "evidence": "Direct Lending ITD Net IRR 9.7%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Credit",
+      "value": "1.4x",
+      "page": 8,
+      "evidence": "Direct Lending TVPI 1.4x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Credit",
+      "value": "555.8",
+      "page": 8,
+      "evidence": "Junior Capital NAV ($M) 555.8",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Credit",
+      "value": "11.1%",
+      "page": 8,
+      "evidence": "Junior Capital ITD Net IRR 11.1%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Credit",
+      "value": "1.4x",
+      "page": 8,
+      "evidence": "Junior Capital TVPI 1.4x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Credit",
+      "value": "444.4",
+      "page": 8,
+      "evidence": "Real Estate Credit NAV ($M) 444.4",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Credit",
+      "value": "4.1%",
+      "page": 8,
+      "evidence": "Real Estate Credit ITD Net IRR 4.1%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Credit",
+      "value": "1.1x",
+      "page": 8,
+      "evidence": "Real Estate Credit TVPI 1.1x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Credit",
+      "value": "468.2",
+      "page": 8,
+      "evidence": "Specialty Finance NAV ($M) 468.2",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Credit",
+      "value": "9.5%",
+      "page": 8,
+      "evidence": "Specialty Finance ITD Net IRR 9.5%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Credit",
+      "value": "1.2x",
+      "page": 8,
+      "evidence": "Specialty Finance TVPI 1.2x",
+      "confidence": "high"
+    },
+    {
+      "metric": "NAV",
+      "asset_class": "Private Credit",
+      "value": "370.8",
+      "page": 8,
+      "evidence": "Real Assets Credit NAV ($M) 370.8",
+      "confidence": "high"
+    },
+    {
+      "metric": "IRR",
+      "asset_class": "Private Credit",
+      "value": "4.9%",
+      "page": 8,
+      "evidence": "Real Assets Credit ITD Net IRR 4.9%",
+      "confidence": "high"
+    },
+    {
+      "metric": "TVPI",
+      "asset_class": "Private Credit",
+      "value": "1.2x",
+      "page": 8,
+      "evidence": "Real Assets Credit TVPI 1.2x",
+      "confidence": "high"
+    }
+  ],
+  "coverage_score": 17.25,
+  "completeness_label": "partial",
+  "proxy_hits": [],
+  "cost_usd": 0.219204,
+  "elapsed_sec": 122.434,
+  "documents_used": 1
+}
